@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'HK Modular';
+  src: local('HK Modular'), local('HKModular'), local('HK Modular Bold'), local('HKModular-Bold'), local('HK Modular Regular');
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: #F9F8F4;
+    color: #3D3D3D;
+  }
+  
+  .font-serif {
+    font-family: 'Lora', Georgia, Cambria, serif;
+  }
+
+  .font-hk-modular,
+  .font-signify-title,
+  .font-signify {
+    font-family: 'Orbitron', 'Oxanium', 'Zen Dots', 'Chakra Petch', 'Syne', 'Outfit', system-ui, -apple-system, sans-serif;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+}
+

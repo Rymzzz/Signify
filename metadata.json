@@ -1,0 +1,10 @@
+{
+  "name": "Remix Signify: Real-Time ASL Gesture Recognition",
+  "description": "Real-time ASL gesture recognition application for ASL learners featuring interactive webcam sign practice, event-driven architecture, and complete production-ready Java Desktop and Mobile codebases.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
