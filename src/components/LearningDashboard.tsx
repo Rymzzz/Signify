@@ -133,7 +133,7 @@ export const LearningDashboard: React.FC<LearningDashboardProps> = ({
 
         {/* Personal Best (Fastest Speed) */}
         {(() => {
-          const speedEntries = (Object.entries(user.bestSpeedRecords || {}) as [string, number][]).sort((a, b) => a[1] - b[1]);
+          const speedEntries = Object.entries(user.bestSpeedRecords || {}).sort((a, b) => Number(a[1]) - Number(b[1]));
           const fastest = speedEntries.length > 0 ? speedEntries[0] : null;
           return (
             <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-4 sm:p-5 flex items-center space-x-3.5 shadow-md">
@@ -145,7 +145,7 @@ export const LearningDashboard: React.FC<LearningDashboardProps> = ({
                   Personal Best
                 </span>
                 <span className="text-xl sm:text-2xl font-black text-white font-mono">
-                  {fastest ? `${(fastest[1] / 1000).toFixed(2)}s` : '--'}
+                  {fastest ? `${(Number(fastest[1]) / 1000).toFixed(2)}s` : '--'}
                 </span>
                 <span className="text-[10px] text-amber-400 font-sans block truncate max-w-[120px]">
                   {fastest ? `Sign '${fastest[0]}'` : 'Practice to set'}

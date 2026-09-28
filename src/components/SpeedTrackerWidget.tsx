@@ -7,12 +7,15 @@ import {
   Award, 
   CheckCircle2, 
   Flame,
-  ArrowRight
+  ArrowRight,
+  Pause,
+  Play
 } from 'lucide-react';
 
 interface SpeedTrackerWidgetProps {
   targetLabel: string;
   isMatched: boolean;
+  isActivityEnded?: boolean;
   onTimeTrialComplete?: (elapsedMs: number) => void;
   personalBestMs?: number;
   onResetTrial?: () => void;
@@ -22,6 +25,7 @@ interface SpeedTrackerWidgetProps {
 export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
   targetLabel,
   isMatched,
+  isActivityEnded = false,
   onTimeTrialComplete,
   personalBestMs,
   onResetTrial,
@@ -29,27 +33,31 @@ export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
 }) => {
   const [elapsedMs, setElapsedMs] = useState<number>(0);
   const [isRunning, setIsRunning] = useState<boolean>(true);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
   const [completedTime, setCompletedTime] = useState<number | null>(null);
 
   const startTimeRef = useRef<number>(performance.now());
+  const accumulatedMsRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
   const matchedHandledRef = useRef<boolean>(false);
 
   // Restart timer whenever the target sign changes
   useEffect(() => {
     startTimeRef.current = performance.now();
+    accumulatedMsRef.current = 0;
     setElapsedMs(0);
     setCompletedTime(null);
     setIsRunning(true);
+    setIsPaused(false);
     matchedHandledRef.current = false;
   }, [targetLabel]);
 
   // Live stopwatch RAF pump
   useEffect(() => {
-    if (!isRunning) return;
+    if (!isRunning || isPaused) return;
 
     const tick = () => {
-      const current = performance.now() - startTimeRef.current;
+      const current = accumulatedMsRef.current + (performance.now() - startTimeRef.current);
       setElapsedMs(Math.round(current));
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -58,27 +66,46 @@ export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isRunning]);
+  }, [isRunning, isPaused]);
 
-  // Handle completion when user successfully matches the sign
+  // Handle completion when user successfully matches the sign or activity has ended
   useEffect(() => {
-    if (isMatched && isRunning && !matchedHandledRef.current) {
+    if ((isMatched || isActivityEnded) && isRunning && !matchedHandledRef.current) {
       matchedHandledRef.current = true;
-      const finalMs = Math.round(performance.now() - startTimeRef.current);
+      const finalMs = isPaused 
+        ? Math.round(accumulatedMsRef.current)
+        : Math.round(accumulatedMsRef.current + (performance.now() - startTimeRef.current));
       setCompletedTime(finalMs);
       setElapsedMs(finalMs);
       setIsRunning(false);
+      setIsPaused(false);
       if (onTimeTrialComplete) {
         onTimeTrialComplete(finalMs);
       }
     }
-  }, [isMatched, isRunning, onTimeTrialComplete]);
+  }, [isMatched, isActivityEnded, isRunning, isPaused, onTimeTrialComplete]);
+
+  const togglePause = () => {
+    if (completedTime !== null) return;
+    if (isPaused) {
+      // Resume
+      startTimeRef.current = performance.now();
+      setIsPaused(false);
+    } else {
+      // Pause
+      accumulatedMsRef.current += performance.now() - startTimeRef.current;
+      setElapsedMs(Math.round(accumulatedMsRef.current));
+      setIsPaused(true);
+    }
+  };
 
   const handleRestart = () => {
     startTimeRef.current = performance.now();
+    accumulatedMsRef.current = 0;
     setElapsedMs(0);
     setCompletedTime(null);
     setIsRunning(true);
+    setIsPaused(false);
     matchedHandledRef.current = false;
     if (onResetTrial) onResetTrial();
   };
@@ -104,13 +131,26 @@ export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
   if (compact) {
     return (
       <div className="flex items-center space-x-2 bg-[#071F15] border border-[#164432] rounded-xl px-2.5 py-1 text-xs">
-        <Timer className={`w-3.5 h-3.5 ${isRunning ? 'text-amber-400 animate-spin' : 'text-emerald-400'}`} />
+        <button
+          onClick={togglePause}
+          disabled={completedTime !== null}
+          className="cursor-pointer text-emerald-400 hover:text-white disabled:opacity-40"
+          title={isPaused ? "Resume" : "Pause"}
+        >
+          {isPaused ? (
+            <Play className="w-3.5 h-3.5 text-amber-400" />
+          ) : (
+            <Timer className={`w-3.5 h-3.5 ${isRunning ? 'text-amber-400 animate-spin' : 'text-emerald-400'}`} />
+          )}
+        </button>
         <span className="font-mono font-bold text-white">
           {formatSeconds(currentDisplayTime)}
         </span>
-        {completedTime !== null && (
+        {completedTime !== null ? (
           <span className="text-[10px] text-emerald-400 font-semibold">Done!</span>
-        )}
+        ) : isPaused ? (
+          <span className="text-[10px] text-amber-400 font-semibold">Paused</span>
+        ) : null}
       </div>
     );
   }
@@ -124,12 +164,12 @@ export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-2">
-          <div className={`p-1.5 rounded-lg ${isRunning ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+          <div className={`p-1.5 rounded-lg ${isPaused ? 'bg-amber-500/30 text-amber-300' : isRunning ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
             <Timer className="w-4 h-4" />
           </div>
           <div>
             <span className="text-xs font-bold text-white tracking-wide block">
-              Speed & Reaction Stopwatch
+              Speed &amp; Reaction Stopwatch
             </span>
             <span className="text-[10px] text-emerald-300/70">
               Target: <span className="font-bold text-white font-mono">{targetLabel}</span>
@@ -137,23 +177,33 @@ export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
           </div>
         </div>
 
-        <button
-          onClick={handleRestart}
-          className="p-1.5 rounded-lg bg-[#071F15] hover:bg-[#123828] border border-[#164432] text-emerald-300 hover:text-white transition-colors cursor-pointer"
-          title="Restart Stopwatch"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center space-x-1.5">
+          <button
+            onClick={togglePause}
+            disabled={completedTime !== null}
+            className="p-1.5 rounded-lg bg-[#071F15] hover:bg-[#123828] border border-[#164432] text-emerald-300 hover:text-white transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+            title={isPaused ? "Resume Stopwatch" : "Pause Stopwatch"}
+          >
+            {isPaused ? <Play className="w-3.5 h-3.5 text-emerald-400" /> : <Pause className="w-3.5 h-3.5 text-amber-300" />}
+          </button>
+          <button
+            onClick={handleRestart}
+            className="p-1.5 rounded-lg bg-[#071F15] hover:bg-[#123828] border border-[#164432] text-emerald-300 hover:text-white transition-colors cursor-pointer"
+            title="Restart Stopwatch"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Main Counter Display */}
       <div className="flex items-baseline justify-between bg-[#05160E] border border-[#143B2B] rounded-xl px-4 py-2.5">
         <div>
           <span className="text-[10px] uppercase font-bold text-emerald-400/80 block">
-            {completedTime !== null ? 'Sign Time Recorded' : 'Execution Time'}
+            {completedTime !== null ? 'Sign Time Recorded' : isPaused ? 'Stopwatch Paused' : 'Execution Time'}
           </span>
           <span className={`text-2xl sm:text-3xl font-black font-mono tracking-tight ${
-            completedTime !== null ? 'text-emerald-400' : 'text-amber-300'
+            completedTime !== null ? 'text-emerald-400' : isPaused ? 'text-amber-400/90' : 'text-amber-300'
           }`}>
             {formatSeconds(currentDisplayTime)}
           </span>
@@ -169,7 +219,7 @@ export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
       {/* Footer Info: Personal Best & Status */}
       <div className="flex items-center justify-between text-[11px] pt-0.5">
         <div className="flex items-center space-x-1.5 text-emerald-300/80">
-          <Award className="w-3.5 h-3.5 text-amber-400" />
+          <Trophy className="w-3.5 h-3.5 text-amber-400" />
           <span>Personal Best:</span>
           <span className="font-mono font-bold text-white">
             {personalBestMs ? formatSeconds(personalBestMs) : '--'}
@@ -179,6 +229,10 @@ export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
         {completedTime !== null ? (
           <span className={`font-semibold ${isNewRecord ? 'text-amber-400 animate-pulse' : 'text-emerald-400'}`}>
             {isNewRecord ? '⚡ New Personal Record!' : 'Sign verified!'}
+          </span>
+        ) : isPaused ? (
+          <span className="text-amber-300/90 font-semibold text-[10px] flex items-center gap-1">
+            <span>⏸</span> Paused
           </span>
         ) : (
           <span className="text-emerald-400/70 italic text-[10px]">

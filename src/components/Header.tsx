@@ -56,6 +56,7 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   const streak = user?.streak ?? 0;
+  const trophies = user?.trophies ?? 0;
   const xp = user?.xp ?? 0;
 
   const toggleFullscreen = () => {

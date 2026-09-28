@@ -92,6 +92,17 @@ interface LiveCameraRecognizerProps {
   onSignChange?: (sign: string) => void;
 }
 
+// Dynamic badge sizing helper to ensure single letters, words, and long phrases fit without protruding
+const getSignBadgeClasses = (text: string, bgClass = 'bg-gradient-to-br from-[#FF4D26] to-[#F97316]') => {
+  if (text.length > 7) {
+    return `min-w-[56px] max-w-[130px] px-2.5 py-1.5 min-h-[48px] rounded-xl ${bgClass} text-white font-extrabold text-[11px] leading-tight flex items-center justify-center text-center shadow-md flex-shrink-0 tracking-tight break-words`;
+  }
+  if (text.length > 2) {
+    return `min-w-[48px] max-w-[90px] px-2.5 h-12 rounded-xl ${bgClass} text-white font-black text-xs flex items-center justify-center text-center shadow-md flex-shrink-0 tracking-tight truncate`;
+  }
+  return `w-12 h-12 rounded-xl ${bgClass} text-white font-black text-2xl flex items-center justify-center shadow-md flex-shrink-0`;
+};
+
 export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
   completedLetters,
   onLetterCompleted,
@@ -102,18 +113,17 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
 
   // Target Sign state
   const [currentTargetLetter, setCurrentTargetLetter] = useState<string>(initialSign || 'A');
+  const prevInitialSignRef = useRef<string | undefined>(initialSign);
   const targetSignIndex = allCurriculumSigns.findIndex(s => s.letter === currentTargetLetter || s.id === currentTargetLetter);
   const targetSign: ASLSign = allCurriculumSigns[targetSignIndex >= 0 ? targetSignIndex : 0];
   const currentLessonInfo = getLessonInfoForSign(currentTargetLetter);
   const [selectedUnitTab, setSelectedUnitTab] = useState<string>(currentLessonInfo?.unitId || 'all');
 
-  const prevInitialSignRef = useRef(initialSign);
-  // React to prop changes smoothly only when parent genuinely passes a new sign
+  // React to prop changes smoothly without remounting or overriding user selections
   useEffect(() => {
     if (initialSign && initialSign !== prevInitialSignRef.current) {
       prevInitialSignRef.current = initialSign;
       setCurrentTargetLetter(initialSign);
-      currentTargetLetterRef.current = initialSign;
       const info = getLessonInfoForSign(initialSign);
       if (info) {
         setSelectedUnitTab(info.unitId);
@@ -171,7 +181,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
   const lastMatchTimeRef = useRef<number>(0);
   const isCompletingRef = useRef<boolean>(false);
   const currentTargetLetterRef = useRef<string>(currentTargetLetter);
-  const processLandmarksRef = useRef<(landmarks: HandLandmark[] | null) => void>(() => {});
+  const processLandmarksRef = useRef<(landmarks: HandLandmark[] | null, multiLandmarks?: HandLandmark[][]) => void>(() => {});
   const pumpFrameRef = useRef<number | null>(null);
 
   const logEvent = useCallback((
@@ -290,18 +300,27 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     snapToSign(currentTargetLetter);
   }, [currentTargetLetter, snapToSign]);
 
-  // Unified helper to switch target sign and notify parent App
-  const selectSign = useCallback((sign: string) => {
+  // Centralized sign selection handler with sync to parent and state reset
+  const selectSign = useCallback((newSignLetter: string) => {
+    prevInitialSignRef.current = newSignLetter;
+    currentTargetLetterRef.current = newSignLetter;
+    setCurrentTargetLetter(newSignLetter);
     setJustCompletedSign(null);
     isCompletingRef.current = false;
     holdStartRef.current = 0;
-    setCurrentTargetLetter(sign);
-    currentTargetLetterRef.current = sign;
-    onSignChange?.(sign);
     setHoldProgress(0);
-    setHoldRemainingMs(400);
+    setHoldRemainingMs(450);
     setIsHoldingCorrect(false);
-  }, [onSignChange]);
+    speedStartTimeRef.current = performance.now();
+    snapToSign(newSignLetter);
+    if (onSignChange) {
+      onSignChange(newSignLetter);
+    }
+    const info = getLessonInfoForSign(newSignLetter);
+    if (info) {
+      setSelectedUnitTab(info.unitId);
+    }
+  }, [snapToSign, onSignChange]);
 
   // Switch to previous sign (Prompted by user action)
   const handlePrevSign = () => {
@@ -325,35 +344,21 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     if (isCompletingRef.current) return;
     isCompletingRef.current = true;
 
-    // Automatically allow further practice after celebration window
-    setTimeout(() => {
-      isCompletingRef.current = false;
-    }, 2500);
-
     setHoldProgress(100);
     setHoldRemainingMs(0);
     setIsHoldingCorrect(true);
     setJustCompletedSign(letterToComplete);
 
-    const now = performance.now();
-    const rawElapsed = Math.round(now - (speedStartTimeRef.current || now));
-    const elapsed = Math.max(150, Math.min(30000, rawElapsed));
+    const elapsed = Math.round(performance.now() - speedStartTimeRef.current);
     setLastSpeedMs(elapsed);
 
-    // Call progress tracking with duplicate XP protection & speed recording
+    // Call progress tracking with duplicate XP protection (Comment 1.1)
     authSyncService.recordSignPractice(letterToComplete, 15, elapsed).then(res => {
-      let notice = '';
-      if (res.isPersonalBest) {
-        notice = `⚡ NEW PERSONAL BEST: ${(elapsed / 1000).toFixed(2)}s! `;
-      }
       if (res.isDuplicateToday) {
-        notice += `Reaction: ${(elapsed / 1000).toFixed(2)}s (Daily XP already credited for '${letterToComplete}')`;
+        setDuplicateXpNotice(`Already completed today (+0 XP duplicate protection). Reaction: ${(elapsed / 1000).toFixed(2)}s`);
       } else {
-        notice += `+${res.xpEarned} XP! Day streak: ${res.streak}d (Reaction: ${(elapsed / 1000).toFixed(2)}s)`;
+        setDuplicateXpNotice(`+${res.xpEarned} XP earned! Day streak: ${res.streak}d. Reaction: ${(elapsed / 1000).toFixed(2)}s`);
       }
-      setDuplicateXpNotice(notice);
-    }).catch(err => {
-      console.warn('Record practice notice:', err);
     });
 
     if (!completedLetters.includes(letterToComplete)) {
@@ -427,7 +432,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
   }, [simThumb, simIndex, simMiddle, simRing, simPinky]);
 
   // Process live camera landmarks only (simulator NEVER feeds into here)
-  const processLandmarks = useCallback((landmarks: HandLandmark[] | null) => {
+  const processLandmarks = useCallback((landmarks: HandLandmark[] | null, multiLandmarks?: HandLandmark[][]) => {
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -448,7 +453,8 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
 
     setLatestLandmarks(landmarks);
     setIsHandDetected(true);
-    setDetectedLandmarkCount(21);
+    const handCount = multiLandmarks && multiLandmarks.length > 0 ? multiLandmarks.length : 1;
+    setDetectedLandmarkCount(handCount * 21);
 
     // Sync canvas internal resolution with its rendered client bounds
     if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
@@ -472,50 +478,54 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     const toCanvasX = (normX: number) => offsetX + (1 - normX) * renderWidth;
     const toCanvasY = (normY: number) => offsetY + normY * renderHeight;
 
-    // 1. Draw Skeleton Lines (in bright vibrant orange #FF7A00 matching screenshot)
-    ctx.save();
-    ctx.strokeStyle = '#FF7A00';
-    ctx.lineWidth = 4;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    // Draw hands (supporting simultaneous multi-hand tracking)
+    const handsToDraw = multiLandmarks && multiLandmarks.length > 0 ? multiLandmarks : [landmarks];
+    
+    handsToDraw.forEach((handPoints, handIdx) => {
+      const strokeColor = handIdx === 0 ? '#FF7A00' : '#10B981'; // Primary orange, Secondary emerald
+      ctx.save();
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 4;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
 
-    SKELETON_CONNECTIONS.forEach(([p1, p2]) => {
-      const pt1 = landmarks[p1];
-      const pt2 = landmarks[p2];
-      if (!pt1 || !pt2) return;
-      ctx.beginPath();
-      ctx.moveTo(toCanvasX(pt1.x), toCanvasY(pt1.y));
-      ctx.lineTo(toCanvasX(pt2.x), toCanvasY(pt2.y));
-      ctx.stroke();
+      SKELETON_CONNECTIONS.forEach(([p1, p2]) => {
+        const pt1 = handPoints[p1];
+        const pt2 = handPoints[p2];
+        if (!pt1 || !pt2) return;
+        ctx.beginPath();
+        ctx.moveTo(toCanvasX(pt1.x), toCanvasY(pt1.y));
+        ctx.lineTo(toCanvasX(pt2.x), toCanvasY(pt2.y));
+        ctx.stroke();
+      });
+
+      handPoints.forEach((pt, idx) => {
+        const cx = toCanvasX(pt.x);
+        const cy = toCanvasY(pt.y);
+        const isTip = [4, 8, 12, 16, 20].includes(idx);
+        const radius = isTip ? 6 : 4;
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius + 2, 0, 2 * Math.PI);
+        ctx.fillStyle = strokeColor;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fill();
+      });
+      ctx.restore();
     });
 
-    // 2. Draw 21 Landmark Nodes (White inner dots, bright orange border ring)
-    landmarks.forEach((pt, idx) => {
-      const cx = toCanvasX(pt.x);
-      const cy = toCanvasY(pt.y);
-      const isTip = [4, 8, 12, 16, 20].includes(idx);
-      const radius = isTip ? 6 : 4;
-
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius + 2, 0, 2 * Math.PI);
-      ctx.fillStyle = '#FF7A00';
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fill();
-    });
-    ctx.restore();
-
-    // 3. Real-time classification with orientation-invariant geometric engine & dynamic motion tracker
+    // 3. Real-time classification with orientation-invariant geometric engine, dynamic motion tracker, and multi-hand support
     const targetLetter = currentTargetLetterRef.current;
     const now = performance.now();
     globalMotionTracker.addFrame(landmarks, now);
     const fingerAnalysis = analyzeFingers(landmarks);
     const motionState = globalMotionTracker.evaluate(fingerAnalysis, targetLetter);
 
-    const result = classifyHandPose(landmarks, targetLetter, motionState);
+    const result = classifyHandPose(landmarks, targetLetter, motionState, multiLandmarks);
 
     // Draw dynamic motion trail on canvas (glowing neon trail for J, Z, or continuous gestures)
     const activeTrail = motionState.activeTrail;
@@ -751,8 +761,8 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
 
   // Mount camera and subscribe to hand tracking landmarks
   useEffect(() => {
-    const unsubscribe = subscribeHandTracker((landmarks) => {
-      processLandmarksRef.current(landmarks);
+    const unsubscribe = subscribeHandTracker((landmarks, multiLandmarks) => {
+      processLandmarksRef.current(landmarks, multiLandmarks);
     });
 
     startCamera();
@@ -914,7 +924,6 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
                               key={sign.id}
                               onClick={() => {
                                 selectSign(sign.letter);
-                                snapToSign(sign.letter);
                               }}
                               className={`px-3 py-2 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between gap-2 text-xs ${
                                 isTarget
@@ -970,7 +979,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
         <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
           <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-4 flex items-center justify-between gap-4 shadow-lg flex-1 min-w-0">
             <div className="flex items-center gap-3.5 min-w-0">
-              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#FF4D26] to-[#F97316] text-white font-black text-2xl flex items-center justify-center shadow-md flex-shrink-0">
+              <div className={getSignBadgeClasses(targetSign.letter)}>
                 {targetSign.letter}
               </div>
 
@@ -1005,6 +1014,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
             <SpeedTrackerWidget
               targetLabel={targetSign.letter}
               isMatched={isHoldingCorrect}
+              isActivityEnded={Boolean(justCompletedSign)}
               onTimeTrialComplete={(ms) => setLastSpeedMs(ms)}
               personalBestMs={authSyncService.getCurrentUser()?.bestSpeedRecords?.[targetSign.letter]}
             />
@@ -1151,7 +1161,6 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
                     setHoldRemainingMs(400);
                     setIsHoldingCorrect(false);
                     isCompletingRef.current = false;
-                    speedStartTimeRef.current = performance.now();
                   }}
                   className="px-3.5 py-2 rounded-xl bg-[#061F15] hover:bg-[#0E3524] border border-emerald-600/40 text-emerald-200 text-xs font-semibold cursor-pointer transition-colors"
                 >
@@ -1235,7 +1244,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
 
         {/* 3. Bottom Reference & Guidance Card */}
         <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-5 shadow-lg flex flex-col sm:flex-row items-start gap-4">
-          <div className="w-12 h-12 rounded-xl bg-[#F97316] text-white font-black text-2xl flex items-center justify-center shadow-md flex-shrink-0">
+          <div className={getSignBadgeClasses(targetSign.letter, 'bg-[#F97316]')}>
             {targetSign.letter}
           </div>
 

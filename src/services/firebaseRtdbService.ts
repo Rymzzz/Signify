@@ -84,7 +84,7 @@ export class FirebaseRtdbService {
         const result: RtdbConnectionStatus = {
           status: 'PERMISSION_DENIED',
           success: false,
-          message: 'Firebase Database reachable, but "Permission Denied" (403). In Firebase Console -> Realtime Database -> Rules tab, ensure rules are set to public read/write and click the blue "Publish" button.',
+          message: 'Firebase Database reachable, but "Permission Denied". Update your Realtime Database Rules to allow read/write.',
           httpStatus: response.status,
           url: baseUrl,
           latencyMs,

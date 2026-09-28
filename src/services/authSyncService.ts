@@ -48,6 +48,7 @@ const DEFAULT_USERS: UserProfile[] = [
     completedModules: [],
     bestSpeedRecords: {},
     averageSpeedMs: 0,
+    trophies: 0,
     deviceSyncedAt: Date.now()
   }
 ];
@@ -351,6 +352,7 @@ class AuthSyncService {
       completedModules: [],
       bestSpeedRecords: {},
       averageSpeedMs: 0,
+      trophies: 0,
       deviceSyncedAt: Date.now()
     };
 

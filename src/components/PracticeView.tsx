@@ -18,7 +18,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { getAllSigns, CURRICULUM_MODULES } from '../data/aslCurriculum';
-import { ASLSign, HandLandmark, UserProfile } from '../types/index';
+import { ASLSign, HandLandmark } from '../types/index';
 import { classifyHandPose, analyzeFingers, ClassificationResult } from '../utils/aslClassifier';
 import { globalMotionTracker } from '../utils/motionTracker';
 import { soundEngine } from '../utils/audio';
@@ -48,6 +48,16 @@ interface PracticeViewProps {
   onSignChange?: (sign: string) => void;
 }
 
+const getSignBadgeClasses = (text: string, bgClass = 'bg-gradient-to-br from-[#FF4D26] to-[#F97316]') => {
+  if (text.length > 7) {
+    return `min-w-[56px] max-w-[130px] px-2.5 py-1.5 min-h-[48px] rounded-xl ${bgClass} text-white font-extrabold text-[11px] leading-tight flex items-center justify-center text-center shadow-md flex-shrink-0 tracking-tight break-words`;
+  }
+  if (text.length > 2) {
+    return `min-w-[48px] max-w-[90px] px-2.5 h-12 rounded-xl ${bgClass} text-white font-black text-xs flex items-center justify-center text-center shadow-md flex-shrink-0 tracking-tight truncate`;
+  }
+  return `w-12 h-12 rounded-xl ${bgClass} text-white font-black text-2xl flex items-center justify-center shadow-md flex-shrink-0`;
+};
+
 export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initialSign, onSignChange }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -71,47 +81,38 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
 
   // Challenge / Target Mode State
   const [challengeTarget, setChallengeTarget] = useState<string>(initialSign || 'A');
-  const prevInitialSignRef = useRef(initialSign);
-
-  useEffect(() => {
-    if (initialSign && initialSign !== prevInitialSignRef.current) {
-      prevInitialSignRef.current = initialSign;
-      setChallengeTarget(initialSign);
-    }
-  }, [initialSign]);
-
+  const prevInitialSignRef = useRef<string | undefined>(initialSign);
   const [isChallengeMode, setIsChallengeMode] = useState(false);
   const [challengeTimer, setChallengeTimer] = useState(60);
   const [challengeScore, setChallengeScore] = useState(0);
   const [challengeActive, setChallengeActive] = useState(false);
+
+  // Sync initialSign smoothly if passed from parent
+  useEffect(() => {
+    if (initialSign && initialSign !== prevInitialSignRef.current) {
+      prevInitialSignRef.current = initialSign;
+      setChallengeTarget(initialSign);
+      setIsTargetMatched(false);
+      setSpeedTrialKey(Date.now());
+    }
+  }, [initialSign]);
 
   // Speed Tracker & Video Modal state
   const [isTargetMatched, setIsTargetMatched] = useState<boolean>(false);
   const [speedTrialKey, setSpeedTrialKey] = useState<number>(Date.now());
   const [videoModalOpen, setVideoModalOpen] = useState<boolean>(false);
 
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(authSyncService.getCurrentUser());
-  const challengeStartTimeRef = useRef<number>(performance.now());
-
-  useEffect(() => {
-    const unsub = authSyncService.subscribe((u) => {
-      if (u) setCurrentUser(u);
-    });
-    return unsub;
-  }, []);
-
+  const currentUser = authSyncService.getCurrentUser();
   const currentTargetSign: ASLSign = allSigns.find(s => s.letter === challengeTarget || s.id === challengeTarget) || allSigns[0];
 
   const pickRandomSign = useCallback(() => {
     globalMotionTracker.reset();
-    challengeStartTimeRef.current = performance.now();
     const list = getFilteredSigns();
     const randomSign = list[Math.floor(Math.random() * list.length)] || allSigns[0];
     setChallengeTarget(randomSign.letter);
-    onSignChange?.(randomSign.letter);
     setIsTargetMatched(false);
     setSpeedTrialKey(Date.now());
-  }, [getFilteredSigns, allSigns, onSignChange]);
+  }, [getFilteredSigns, allSigns]);
 
   // Challenge countdown timer
   useEffect(() => {
@@ -239,7 +240,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
 
   // Subscribe to MediaPipe singleton hand tracker
   useEffect(() => {
-    const unsubscribe = subscribeHandTracker((landmarks) => {
+    const unsubscribe = subscribeHandTracker((landmarks, multiLandmarks) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
@@ -248,63 +249,45 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       if (landmarks && landmarks.length >= 21) {
-        // Sync canvas internal resolution with its rendered client bounds
-        if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-          canvas.width = canvas.clientWidth;
-          canvas.height = canvas.clientHeight;
-        }
+        // Draw Skeleton Lines and Landmark Nodes for all detected hands
+        const handsToDraw = multiLandmarks && multiLandmarks.length > 0 ? multiLandmarks : [landmarks];
 
-        const video = videoRef.current;
-        const vWidth = video?.videoWidth || 640;
-        const vHeight = video?.videoHeight || 480;
-        const cWidth = canvas.width;
-        const cHeight = canvas.height;
+        handsToDraw.forEach((handPoints, handIdx) => {
+          const strokeColor = handIdx === 0 ? '#F97316' : '#10B981';
+          ctx.save();
+          ctx.strokeStyle = strokeColor;
+          ctx.lineWidth = 4;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
 
-        // Sub-pixel object-cover projection mapping:
-        const scale = Math.max(cWidth / vWidth, cHeight / vHeight);
-        const renderWidth = vWidth * scale;
-        const renderHeight = vHeight * scale;
-        const offsetX = (cWidth - renderWidth) / 2;
-        const offsetY = (cHeight - renderHeight) / 2;
+          SKELETON_CONNECTIONS.forEach(([p1, p2]) => {
+            const pt1 = handPoints[p1];
+            const pt2 = handPoints[p2];
+            if (!pt1 || !pt2) return;
+            ctx.beginPath();
+            ctx.moveTo((1 - pt1.x) * canvas.width, pt1.y * canvas.height);
+            ctx.lineTo((1 - pt2.x) * canvas.width, pt2.y * canvas.height);
+            ctx.stroke();
+          });
 
-        const toCanvasX = (normX: number) => offsetX + (1 - normX) * renderWidth;
-        const toCanvasY = (normY: number) => offsetY + normY * renderHeight;
+          handPoints.forEach((pt, idx) => {
+            const cx = (1 - pt.x) * canvas.width;
+            const cy = pt.y * canvas.height;
+            const isTip = [4, 8, 12, 16, 20].includes(idx);
+            const radius = isTip ? 6 : 4;
 
-        // Draw Skeleton Lines
-        ctx.save();
-        ctx.strokeStyle = '#F97316';
-        ctx.lineWidth = 4;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius + 2, 0, 2 * Math.PI);
+            ctx.fillStyle = strokeColor;
+            ctx.fill();
 
-        SKELETON_CONNECTIONS.forEach(([p1, p2]) => {
-          const pt1 = landmarks[p1];
-          const pt2 = landmarks[p2];
-          if (!pt1 || !pt2) return;
-          ctx.beginPath();
-          ctx.moveTo(toCanvasX(pt1.x), toCanvasY(pt1.y));
-          ctx.lineTo(toCanvasX(pt2.x), toCanvasY(pt2.y));
-          ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fill();
+          });
+          ctx.restore();
         });
-
-        // Draw 21 Landmark Nodes
-        landmarks.forEach((pt, idx) => {
-          const cx = toCanvasX(pt.x);
-          const cy = toCanvasY(pt.y);
-          const isTip = [4, 8, 12, 16, 20].includes(idx);
-          const radius = isTip ? 6 : 4;
-
-          ctx.beginPath();
-          ctx.arc(cx, cy, radius + 2, 0, 2 * Math.PI);
-          ctx.fillStyle = '#F97316';
-          ctx.fill();
-
-          ctx.beginPath();
-          ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fill();
-        });
-        ctx.restore();
 
         // Motion Evaluation
         const now = performance.now();
@@ -312,7 +295,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
         const fingerAnalysis = analyzeFingers(landmarks);
         const motionState = globalMotionTracker.evaluate(fingerAnalysis, challengeTarget);
 
-        const result: ClassificationResult = classifyHandPose(landmarks, challengeTarget, motionState);
+        const result: ClassificationResult = classifyHandPose(landmarks, challengeTarget, motionState, multiLandmarks);
         setDetectedLetter(result.letter);
         setConfidence(Math.round(result.confidence * 100));
         setTopPredictions(result.rawDistances);
@@ -329,16 +312,9 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
           setIsTargetMatched(true);
           soundEngine.playSuccess();
 
-          const now = performance.now();
-          const elapsed = Math.max(150, Math.min(30000, Math.round(now - (challengeStartTimeRef.current || now))));
-
           if (isChallengeMode && challengeActive) {
             setChallengeScore(s => s + 1);
-            authSyncService.recordSignPractice(challengeTarget, 15, elapsed).then(res => {
-              if (res.xpEarned > 0 && onScoreEarned) {
-                onScoreEarned(res.xpEarned);
-              }
-            });
+            if (onScoreEarned) onScoreEarned(15);
             setTimeout(() => {
               pickRandomSign();
             }, 800);
@@ -445,15 +421,15 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
             />
 
             {/* Target Sign Badge Overlay */}
-            <div className="absolute top-4 left-4 bg-[#0B2A1E]/95 backdrop-blur-md border border-[#164432] rounded-2xl p-3 flex items-center space-x-3 shadow-lg">
-              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#FF4D26] to-[#F97316] text-white font-black text-2xl flex items-center justify-center shadow-md">
+            <div className="absolute top-4 left-4 bg-[#0B2A1E]/95 backdrop-blur-md border border-[#164432] rounded-2xl p-3 flex items-center space-x-3 shadow-lg max-w-[85%]">
+              <div className={getSignBadgeClasses(challengeTarget)}>
                 {challengeTarget}
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="text-[10px] uppercase font-bold text-emerald-400/80 block">
                   Target Sign
                 </span>
-                <span className="text-sm font-bold text-white block">
+                <span className="text-sm font-bold text-white block truncate">
                   {currentTargetSign.title}
                 </span>
               </div>
@@ -518,6 +494,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
             key={speedTrialKey}
             targetLabel={challengeTarget}
             isMatched={isTargetMatched}
+            isActivityEnded={isTargetMatched}
             onTimeTrialComplete={handleTimeTrialComplete}
             personalBestMs={currentUser?.bestSpeedRecords?.[challengeTarget]}
             onResetTrial={() => setIsTargetMatched(false)}

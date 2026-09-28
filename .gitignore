@@ -13,8 +13,6 @@ dist-ssr/
 .env.*.local
 *.pem
 certs/
-Downloads*
-id_*
 
 # Python virtual environment & cache
 .venv/
@@ -29,5 +27,6 @@ processed_combine_asl_dataset/
 # OS & Editor files
 .DS_Store
 Thumbs.db
-*.local
-
+# Local SSH keys and downloads
+Downloads*
+*.pub

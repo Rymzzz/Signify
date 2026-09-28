@@ -1,6 +1,6 @@
 import { HandLandmark } from '../types/index';
 
-type HandResultsCallback = (landmarks: HandLandmark[] | null) => void;
+export type HandResultsCallback = (landmarks: HandLandmark[] | null, multiLandmarks?: HandLandmark[][]) => void;
 
 let handsInstance: any = null;
 let initPromise: Promise<any> | null = null;
@@ -57,7 +57,7 @@ export async function getHandsInstance(): Promise<any> {
     });
 
     hands.setOptions({
-      maxNumHands: 1,
+      maxNumHands: 2,
       modelComplexity: 1,
       minDetectionConfidence: 0.5,
       minTrackingConfidence: 0.5
@@ -68,9 +68,9 @@ export async function getHandsInstance(): Promise<any> {
       try {
         if (activeCallback) {
           if (results && results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            activeCallback(results.multiHandLandmarks[0]);
+            activeCallback(results.multiHandLandmarks[0], results.multiHandLandmarks);
           } else {
-            activeCallback(null);
+            activeCallback(null, []);
           }
         }
       } catch (callbackErr) {

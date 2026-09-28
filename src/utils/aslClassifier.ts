@@ -435,7 +435,8 @@ const REFERENCE_FEATURES: { letter: string; features: number[]; sign: ASLSign }[
 export function classifyHandPose(
   landmarks: HandLandmark[],
   targetLetter?: string,
-  motionState?: DynamicMotionState
+  motionState?: DynamicMotionState,
+  multiLandmarks?: HandLandmark[][]
 ): ClassificationResult {
   const fallbackSign = ASL_ALPHABET[0];
 
@@ -456,6 +457,9 @@ export function classifyHandPose(
   const palmScale = Math.hypot(landmarks[0].x - landmarks[9].x, landmarks[0].y - landmarks[9].y);
   const thumbTip = landmarks[4];
   const indexMcp = landmarks[5];
+  const tToRing = dist(thumbTip, landmarks[13]) / (palmScale || 1);
+  const tToMid = dist(thumbTip, landmarks[9]) / (palmScale || 1);
+  const tToIndex = dist(thumbTip, indexMcp) / (palmScale || 1);
 
   // Bilateral kinematics evaluation across all 47 fingerpose gestures
   const fpEstimates = estimateASLGesturesBilateral(landmarks, 5.0);
@@ -495,13 +499,15 @@ export function classifyHandPose(
     switch (letter) {
       case 'A':
         // Fist with thumb resting alongside index finger
-        if (analysis.isClawedE || analysis.isClosedCircleO || analysis.isCurvedC || analysis.isIndexHooked || analysis.isFistM || analysis.isFistN || analysis.isFistT || analysis.isFistS) {
-          ruleBonus -= 0.60;
-        } else if (analysis.allFingersCurled) {
+        if (analysis.allFingersCurled) {
           if (analysis.thumbAlongsideIndex || (analysis.thumbUpright && !analysis.thumbAcross)) {
-            ruleBonus += 0.90;
+            ruleBonus += 1.05;
+          } else if (targetLetter === 'A') {
+            ruleBonus += 0.85;
+          } else if (analysis.thumbAcross || analysis.thumbOverFront) {
+            ruleBonus += 0.20; // S is better match if thumb across
           } else {
-            ruleBonus += 0.40;
+            ruleBonus += 0.50;
           }
         } else {
           ruleBonus -= 0.40;
@@ -678,17 +684,15 @@ export function classifyHandPose(
 
       case 'M':
         // Thumb under three fingers (index, middle, ring draped over thumb)
-        if (analysis.isFistM) {
-          ruleBonus += 0.95;
-        } else if (analysis.isClawedE || analysis.isClosedCircleO || analysis.isCurvedC || analysis.isFistT || analysis.isFistN) {
-          ruleBonus -= 0.60;
-        } else if (analysis.allFingersCurled) {
-          if (analysis.thumbAlongsideIndex || (analysis.thumbUpright && !analysis.thumbAcross)) {
-            ruleBonus -= 0.50;
+        if (analysis.allFingersCurled) {
+          if (analysis.isFistM || (tToRing <= tToMid && tToRing < 0.40)) {
+            ruleBonus += 1.00;
           } else if (targetLetter === 'M') {
             ruleBonus += 0.85;
+          } else if (analysis.thumbAlongsideIndex) {
+            ruleBonus -= 0.30;
           } else {
-            ruleBonus += 0.35;
+            ruleBonus += 0.40;
           }
         } else {
           ruleBonus -= 0.40;
@@ -697,17 +701,15 @@ export function classifyHandPose(
 
       case 'N':
         // Thumb under two fingers (index, middle draped over thumb)
-        if (analysis.isFistN) {
-          ruleBonus += 0.95;
-        } else if (analysis.isClawedE || analysis.isClosedCircleO || analysis.isCurvedC || analysis.isFistT || analysis.isFistM) {
-          ruleBonus -= 0.60;
-        } else if (analysis.allFingersCurled) {
-          if (analysis.thumbAlongsideIndex || (analysis.thumbUpright && !analysis.thumbAcross)) {
-            ruleBonus -= 0.50;
+        if (analysis.allFingersCurled) {
+          if (analysis.isFistN || (tToMid <= tToIndex && tToMid < 0.38)) {
+            ruleBonus += 1.00;
           } else if (targetLetter === 'N') {
             ruleBonus += 0.85;
+          } else if (analysis.thumbAlongsideIndex) {
+            ruleBonus -= 0.30;
           } else {
-            ruleBonus += 0.35;
+            ruleBonus += 0.40;
           }
         } else {
           ruleBonus -= 0.40;
@@ -769,17 +771,15 @@ export function classifyHandPose(
 
       case 'S':
         // Fist with thumb folded across knuckles
-        if (analysis.isFistS) {
-          ruleBonus += 0.95;
-        } else if (analysis.isClawedE || analysis.isClosedCircleO || analysis.isCurvedC || analysis.isFistM || analysis.isFistN || analysis.isFistT) {
-          ruleBonus -= 0.60;
-        } else if (analysis.allFingersCurled) {
-          if (analysis.thumbAcross || analysis.thumbOverFront) {
-            ruleBonus += 0.85;
+        if (analysis.allFingersCurled) {
+          if (analysis.thumbAcross || analysis.thumbOverFront || analysis.isFistS) {
+            ruleBonus += 1.00;
           } else if (targetLetter === 'S') {
-            ruleBonus += 0.80;
+            ruleBonus += 0.85;
+          } else if (analysis.thumbAlongsideIndex) {
+            ruleBonus -= 0.30;
           } else {
-            ruleBonus += 0.35;
+            ruleBonus += 0.40;
           }
         } else {
           ruleBonus -= 0.40;
@@ -788,17 +788,15 @@ export function classifyHandPose(
 
       case 'T':
         // Thumb tucked between index and middle knuckles
-        if (analysis.isFistT) {
-          ruleBonus += 0.95;
-        } else if (analysis.isClawedE || analysis.isClosedCircleO || analysis.isCurvedC || analysis.isFistM || analysis.isFistN) {
-          ruleBonus -= 0.60;
-        } else if (analysis.allFingersCurled) {
-          if (analysis.thumbAlongsideIndex || (analysis.thumbUpright && !analysis.thumbAcross)) {
-            ruleBonus -= 0.50;
-          } else if (analysis.thumbBetweenIndexMiddle || targetLetter === 'T') {
+        if (analysis.allFingersCurled) {
+          if (analysis.isFistT || analysis.thumbBetweenIndexMiddle || (tToIndex < tToMid && tToIndex < 0.35)) {
+            ruleBonus += 1.00;
+          } else if (targetLetter === 'T') {
             ruleBonus += 0.85;
+          } else if (analysis.thumbAlongsideIndex) {
+            ruleBonus -= 0.30;
           } else {
-            ruleBonus += 0.35;
+            ruleBonus += 0.40;
           }
         } else {
           ruleBonus -= 0.40;
@@ -992,86 +990,151 @@ export function classifyHandPose(
 
       // WORDS & GREETINGS MODULE (WLASL / MuteMotion)
       case 'HELLO':
-        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
-          ruleBonus += 0.90;
+        if (targetLetter === 'HELLO') {
+          if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+            ruleBonus += 1.05;
+          } else {
+            ruleBonus += 0.40;
+          }
+        } else if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended && landmarks[0].y < 0.40) {
+          ruleBonus += 0.25;
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
 
       case 'THANK YOU':
-        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
-          ruleBonus += 0.90;
+        if (targetLetter === 'THANK YOU') {
+          if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+            ruleBonus += 1.05;
+          } else {
+            ruleBonus += 0.40;
+          }
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
 
       case 'YES':
-        if (analysis.allFingersCurled) {
-          ruleBonus += 0.90;
+        if (targetLetter === 'YES') {
+          if (analysis.allFingersCurled) {
+            ruleBonus += 1.05;
+          } else {
+            ruleBonus += 0.40;
+          }
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
 
       case 'NO':
-        if (analysis.indexThumbPinch || analysis.middleThumbPinch || (!analysis.ringExtended && !analysis.pinkyExtended)) {
-          ruleBonus += 1.15;
+        if (targetLetter === 'NO') {
+          if (analysis.indexThumbPinch || analysis.middleThumbPinch || (!analysis.ringExtended && !analysis.pinkyExtended)) {
+            ruleBonus += 1.15;
+          } else {
+            ruleBonus += 0.40;
+          }
+        } else if (analysis.indexThumbPinch && analysis.middleThumbPinch && !analysis.ringExtended && !analysis.pinkyExtended) {
+          ruleBonus += 0.80;
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.50;
         }
         break;
 
-      case 'NICE TO MEET YOU':
-        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
-          ruleBonus += 1.05;
-        } else if (analysis.indexExtended && !analysis.middleExtended) {
-          ruleBonus += 0.90;
+      case 'NICE TO MEET YOU': {
+        // Two-handed ASL "MEET" (core of NICE TO MEET YOU)
+        if (multiLandmarks && multiLandmarks.length >= 2) {
+          const h1 = multiLandmarks[0];
+          const h2 = multiLandmarks[1];
+          const h1Analysis = analyzeFingers(h1);
+          const h2Analysis = analyzeFingers(h2);
+          const distBetweenWrists = Math.hypot(h1[0].x - h2[0].x, h1[0].y - h2[0].y);
+          const distBetweenIndex = Math.hypot(h1[8].x - h2[8].x, h1[8].y - h2[8].y);
+
+          // Two people meeting: both index fingers extended upright approaching each other
+          const bothIndexUp = h1Analysis.indexExtended && h2Analysis.indexExtended && !h1Analysis.ringExtended && !h2Analysis.ringExtended;
+          // Or two flat palms meeting ("NICE")
+          const bothPalmsFlat = h1Analysis.indexExtended && h1Analysis.middleExtended && h2Analysis.indexExtended && h2Analysis.middleExtended;
+
+          if ((bothIndexUp && (distBetweenIndex < 0.45 || distBetweenWrists < 0.55)) || 
+              (bothPalmsFlat && distBetweenWrists < 0.45)) {
+            ruleBonus += 1.45;
+            break;
+          }
+        }
+
+        // Single-hand fallback: ONLY award bonus if user is explicitly targeting this sign
+        if (targetLetter === 'NICE TO MEET YOU') {
+          if (analysis.indexExtended && !analysis.middleExtended && !analysis.ringExtended && !analysis.pinkyExtended) {
+            ruleBonus += 0.95;
+          } else if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+            ruleBonus += 0.80;
+          } else {
+            ruleBonus += 0.35;
+          }
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
+      }
 
       case 'HOW ARE YOU':
-        if (analysis.isCurvedC || (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended)) {
-          ruleBonus += 1.05;
-        } else if (analysis.indexExtended && !analysis.middleExtended) {
-          ruleBonus += 0.90;
+        if (targetLetter === 'HOW ARE YOU') {
+          if (analysis.isCurvedC || (analysis.indexExtended && analysis.middleExtended)) {
+            ruleBonus += 1.05;
+          } else {
+            ruleBonus += 0.40;
+          }
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
 
       case 'PLEASE':
-        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
-          ruleBonus += 0.85;
+        if (targetLetter === 'PLEASE') {
+          if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+            ruleBonus += 1.00;
+          } else {
+            ruleBonus += 0.40;
+          }
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
 
       case 'SORRY':
-        if (analysis.allFingersCurled && (analysis.thumbAlongsideIndex || analysis.thumbUpright)) {
-          ruleBonus += 0.90;
+        if (targetLetter === 'SORRY') {
+          if (analysis.allFingersCurled) {
+            ruleBonus += 1.00;
+          } else {
+            ruleBonus += 0.40;
+          }
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
 
       case 'HELP':
-        if (analysis.allFingersCurled && (analysis.thumbUpright || analysis.thumbExtended)) {
-          ruleBonus += 0.90;
+        if (targetLetter === 'HELP') {
+          if (analysis.allFingersCurled && (analysis.thumbUpright || analysis.thumbExtended)) {
+            ruleBonus += 1.00;
+          } else {
+            ruleBonus += 0.40;
+          }
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
 
       case 'MORE':
-        if (analysis.allFingersCurled || analysis.isClosedCircleO || analysis.indexThumbPinch) {
-          ruleBonus += 0.85;
+        if (targetLetter === 'MORE') {
+          if (analysis.allFingersCurled || analysis.isClosedCircleO || analysis.indexThumbPinch) {
+            ruleBonus += 1.00;
+          } else {
+            ruleBonus += 0.40;
+          }
         } else {
-          ruleBonus -= 0.30;
+          ruleBonus -= 0.60;
         }
         break;
 
