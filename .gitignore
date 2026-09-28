@@ -13,6 +13,8 @@ dist-ssr/
 .env.*.local
 *.pem
 certs/
+Downloads*
+id_*
 
 # Python virtual environment & cache
 .venv/
