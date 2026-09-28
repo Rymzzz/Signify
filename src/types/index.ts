@@ -4,12 +4,14 @@ export interface HandLandmark {
   z?: number;
 }
 
+export type SignCategory = 'vowel' | 'consonant' | 'complex' | 'number' | 'word' | 'phrase';
+
 export interface ASLSign {
   id: string;
-  letter: string;
+  letter: string; // The display label (e.g., 'A', '5', 'HELLO', 'THANK YOU')
   title: string;
   shortDescription?: string;
-  category: 'vowel' | 'consonant' | 'complex';
+  category: SignCategory;
   difficulty: 'Beginner' | 'Intermediate' | 'Advanced';
   description: string;
   fingerStates: {
@@ -23,6 +25,81 @@ export interface ASLSign {
   commonMistakes: string[];
   // Reference 21 normalized landmarks for simulation and visualization
   referenceLandmarks: HandLandmark[];
+  // Video and media visual samples
+  videoUrl?: string;
+  gifUrl?: string;
+  sampleVideoQuery?: string;
+  motionTrajectory?: { x: number; y: number }[];
+  signType?: 'alphabet' | 'number' | 'word' | 'phrase';
+  dynamicMotion?: boolean;
+}
+
+export type UserRole = 'user' | 'admin';
+
+export interface UserProfile {
+  uid: string;
+  email: string;
+  displayName: string;
+  password?: string; // Stored securely for account authentication
+  role: UserRole;
+  avatar: string;
+  createdAt: number;
+  lastActiveDate: string; // 'YYYY-MM-DD'
+  streak: number;
+  xp: number;
+  trophies: number;
+  level: number;
+  // Completed signs across all modules
+  completedSigns: string[];
+  // Map of date string -> sign IDs practiced that day (prevents duplicate XP on same day)
+  dailyPracticedSigns: Record<string, string[]>;
+  // Module IDs fully finished
+  completedModules: string[];
+  // Reaction & execution speed records in milliseconds per sign
+  bestSpeedRecords: Record<string, number>;
+  averageSpeedMs?: number;
+  deviceSyncedAt?: number;
+}
+
+export type ModuleCategory = 'alphabet' | 'numbers' | 'words' | 'phrases';
+
+export interface CurriculumModule {
+  id: string;
+  unitId?: string;
+  unitNumber?: number;
+  title: string;
+  subtitle: string;
+  description: string;
+  category: ModuleCategory;
+  level: 'Beginner' | 'Intermediate' | 'Advanced';
+  badge: string;
+  itemCount: number;
+  xpPerSign: number;
+  signs: ASLSign[];
+  color: string;
+}
+
+export interface CurriculumUnit {
+  id: string; // 'unit-1', 'unit-2', 'unit-3'
+  unitNumber: number;
+  title: string;
+  subtitle: string;
+  difficulty: 'Beginner' | 'Intermediate' | 'Advanced';
+  description: string;
+  badge: string;
+  color: string;
+  modules: CurriculumModule[];
+}
+
+export interface SpeedTrialRecord {
+  signId: string;
+  signLetter: string;
+  targetStartTime: number;
+  completionTime: number;
+  elapsedMs: number;
+  isPersonalBest: boolean;
+  rating: 'LIGHTNING' | 'SWIFT' | 'STEADY' | 'LEARNING';
+  feedback: string;
 }
 
 export interface GestureEventRecord {
@@ -62,4 +139,7 @@ export interface PracticeSessionState {
   feedbackStatus: 'IDLE' | 'CORRECT' | 'TRY_AGAIN';
   feedbackMessage: string;
   holdProgress: number; // 0 to 100% stabilization hold
+  speedTimerActive?: boolean;
+  speedStartTime?: number;
+  lastElapsedMs?: number;
 }

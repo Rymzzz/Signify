@@ -15,15 +15,21 @@ import {
   Eye, 
   EyeOff,
   Radio,
-  Database
+  Database,
+  Video,
+  Timer
 } from 'lucide-react';
 import { ASL_ALPHABET } from '../data/aslAlphabet';
-import { ASLSign, HandLandmark, GestureEventRecord } from '../types/index';
+import { getAllSigns, CURRICULUM_UNITS, CURRICULUM_MODULES } from '../data/aslCurriculum';
+import { ASLSign, HandLandmark, GestureEventRecord, CurriculumUnit, CurriculumModule } from '../types/index';
 import { soundEngine } from '../utils/audio';
 import { classifyHandPose, analyzeFingers } from '../utils/aslClassifier';
 import { globalMotionTracker } from '../utils/motionTracker';
 import { UnitGuideModal } from './UnitGuideModal';
 import { DatasetCollectorModal } from './DatasetCollectorModal';
+import { SpeedTrackerWidget } from './SpeedTrackerWidget';
+import { SignVideoModal } from './SignVideoModal';
+import { authSyncService } from '../services/authSyncService';
 import { getHandsInstance, subscribeHandTracker, processVideoFrame } from '../utils/handTracker';
 
 const SKELETON_CONNECTIONS = [
@@ -41,34 +47,85 @@ const SKELETON_CONNECTIONS = [
   [5, 9], [9, 13], [13, 17]
 ];
 
-interface ChapterDef {
-  id: number;
-  title: string;
-  letters: string[];
+export interface LessonInfo {
+  unitId: string;
+  unitNumber: number;
+  unitTitle: string;
+  unitBadge: string;
+  moduleId: string;
+  moduleBadge: string;
+  moduleTitle: string;
+  lessonCode: string; // e.g. "1.1.1"
+  sign: ASLSign;
 }
 
-const CHAPTERS: ChapterDef[] = [
-  { id: 1, title: 'Chapter 1: Letters A through E', letters: ['A', 'B', 'C', 'D', 'E'] },
-  { id: 2, title: 'Chapter 2: Letters F through J', letters: ['F', 'G', 'H', 'I', 'J'] },
-  { id: 3, title: 'Chapter 3: Letters K through O', letters: ['K', 'L', 'M', 'N', 'O'] },
-  { id: 4, title: 'Chapter 4: Letters P through T', letters: ['P', 'Q', 'R', 'S', 'T'] },
-  { id: 5, title: 'Chapter 5: Letters U through Z', letters: ['U', 'V', 'W', 'X', 'Y', 'Z'] },
-];
+export function getLessonInfoForSign(signLetter: string): LessonInfo | null {
+  for (const unit of CURRICULUM_UNITS) {
+    for (let mIdx = 0; mIdx < unit.modules.length; mIdx++) {
+      const mod = unit.modules[mIdx];
+      for (let sIdx = 0; sIdx < mod.signs.length; sIdx++) {
+        const s = mod.signs[sIdx];
+        if (s.letter === signLetter || s.id === signLetter) {
+          return {
+            unitId: unit.id,
+            unitNumber: unit.unitNumber,
+            unitTitle: unit.title,
+            unitBadge: unit.badge,
+            moduleId: mod.id,
+            moduleBadge: mod.badge,
+            moduleTitle: mod.title,
+            lessonCode: `${unit.unitNumber}.${mIdx + 1}.${sIdx + 1}`,
+            sign: s,
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
 
 interface LiveCameraRecognizerProps {
   completedLetters: string[];
   onLetterCompleted: (letter: string) => void;
   onSelectLetterForGuide?: (letter: string) => void;
+  initialSign?: string;
+  onSignChange?: (sign: string) => void;
 }
 
 export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
   completedLetters,
   onLetterCompleted,
+  initialSign,
+  onSignChange,
 }) => {
-  // Target Letter state (starts on 'A' so users practice from the beginning)
-  const [currentTargetLetter, setCurrentTargetLetter] = useState<string>('A');
-  const targetSignIndex = ASL_ALPHABET.findIndex(s => s.letter === currentTargetLetter);
-  const targetSign: ASLSign = ASL_ALPHABET[targetSignIndex >= 0 ? targetSignIndex : 0];
+  const allCurriculumSigns = getAllSigns();
+
+  // Target Sign state
+  const [currentTargetLetter, setCurrentTargetLetter] = useState<string>(initialSign || 'A');
+  const targetSignIndex = allCurriculumSigns.findIndex(s => s.letter === currentTargetLetter || s.id === currentTargetLetter);
+  const targetSign: ASLSign = allCurriculumSigns[targetSignIndex >= 0 ? targetSignIndex : 0];
+  const currentLessonInfo = getLessonInfoForSign(currentTargetLetter);
+  const [selectedUnitTab, setSelectedUnitTab] = useState<string>(currentLessonInfo?.unitId || 'all');
+
+  const prevInitialSignRef = useRef(initialSign);
+  // React to prop changes smoothly only when parent genuinely passes a new sign
+  useEffect(() => {
+    if (initialSign && initialSign !== prevInitialSignRef.current) {
+      prevInitialSignRef.current = initialSign;
+      setCurrentTargetLetter(initialSign);
+      currentTargetLetterRef.current = initialSign;
+      const info = getLessonInfoForSign(initialSign);
+      if (info) {
+        setSelectedUnitTab(info.unitId);
+      }
+    }
+  }, [initialSign]);
+
+  // Video Demo & Stopwatch state
+  const [showVideoModal, setShowVideoModal] = useState<boolean>(false);
+  const [lastSpeedMs, setLastSpeedMs] = useState<number | null>(null);
+  const [duplicateXpNotice, setDuplicateXpNotice] = useState<string | null>(null);
+  const speedStartTimeRef = useRef<number>(performance.now());
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -222,6 +279,9 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     globalMotionTracker.reset();
     holdStartRef.current = 0;
     lastMatchTimeRef.current = 0;
+    speedStartTimeRef.current = performance.now();
+    setLastSpeedMs(null);
+    setDuplicateXpNotice(null);
     setHoldProgress(0);
     setHoldRemainingMs(400);
     setIsHoldingCorrect(false);
@@ -230,33 +290,34 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     snapToSign(currentTargetLetter);
   }, [currentTargetLetter, snapToSign]);
 
+  // Unified helper to switch target sign and notify parent App
+  const selectSign = useCallback((sign: string) => {
+    setJustCompletedSign(null);
+    isCompletingRef.current = false;
+    holdStartRef.current = 0;
+    setCurrentTargetLetter(sign);
+    currentTargetLetterRef.current = sign;
+    onSignChange?.(sign);
+    setHoldProgress(0);
+    setHoldRemainingMs(400);
+    setIsHoldingCorrect(false);
+  }, [onSignChange]);
+
   // Switch to previous sign (Prompted by user action)
   const handlePrevSign = () => {
-    const curIdx = ASL_ALPHABET.findIndex(s => s.letter === currentTargetLetter);
+    const curIdx = allCurriculumSigns.findIndex(s => s.letter === currentTargetLetter || s.id === currentTargetLetter);
     if (curIdx > 0) {
-      setJustCompletedSign(null);
-      isCompletingRef.current = false;
-      holdStartRef.current = 0;
-      setCurrentTargetLetter(ASL_ALPHABET[curIdx - 1].letter);
-      setHoldProgress(0);
-      setHoldRemainingMs(400);
-      setIsHoldingCorrect(false);
+      selectSign(allCurriculumSigns[curIdx - 1].letter);
     }
   };
 
   // Switch to next sign (Prompted by user action)
   const handleNextSign = useCallback(() => {
-    const curIdx = ASL_ALPHABET.findIndex(s => s.letter === currentTargetLetterRef.current);
-    if (curIdx < ASL_ALPHABET.length - 1) {
-      setJustCompletedSign(null);
-      isCompletingRef.current = false;
-      holdStartRef.current = 0;
-      setCurrentTargetLetter(ASL_ALPHABET[curIdx + 1].letter);
-      setHoldProgress(0);
-      setHoldRemainingMs(400);
-      setIsHoldingCorrect(false);
+    const curIdx = allCurriculumSigns.findIndex(s => s.letter === currentTargetLetterRef.current || s.id === currentTargetLetterRef.current);
+    if (curIdx < allCurriculumSigns.length - 1) {
+      selectSign(allCurriculumSigns[curIdx + 1].letter);
     }
-  }, []);
+  }, [allCurriculumSigns, selectSign]);
 
   // Trigger success for recognized sign via visual hold detection
   // DOES NOT auto-advance to next sign — user prompts when ready
@@ -264,10 +325,27 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     if (isCompletingRef.current) return;
     isCompletingRef.current = true;
 
+    // Automatically allow further practice after celebration window
+    setTimeout(() => {
+      isCompletingRef.current = false;
+    }, 2500);
+
     setHoldProgress(100);
     setHoldRemainingMs(0);
     setIsHoldingCorrect(true);
     setJustCompletedSign(letterToComplete);
+
+    const elapsed = Math.round(performance.now() - speedStartTimeRef.current);
+    setLastSpeedMs(elapsed);
+
+    // Call progress tracking with duplicate XP protection (Comment 1.1)
+    authSyncService.recordSignPractice(letterToComplete, 15, elapsed).then(res => {
+      if (res.isDuplicateToday) {
+        setDuplicateXpNotice(`Already completed today (+0 XP duplicate protection). Reaction: ${(elapsed / 1000).toFixed(2)}s`);
+      } else {
+        setDuplicateXpNotice(`+${res.xpEarned} XP earned! Day streak: ${res.streak}d. Reaction: ${(elapsed / 1000).toFixed(2)}s`);
+      }
+    });
 
     if (!completedLetters.includes(letterToComplete)) {
       onLetterCompleted(letterToComplete);
@@ -292,7 +370,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
       targetSign: letterToComplete,
       confidence: 0.95,
       status: 'CORRECT',
-      message: `Mastered Letter '${letterToComplete}'!`
+      message: `Mastered Sign '${letterToComplete}'!`
     });
   }, [completedLetters, onLetterCompleted, soundEnabled, logEvent]);
 
@@ -363,6 +441,28 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     setIsHandDetected(true);
     setDetectedLandmarkCount(21);
 
+    // Sync canvas internal resolution with its rendered client bounds
+    if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+      canvas.width = canvas.clientWidth;
+      canvas.height = canvas.clientHeight;
+    }
+
+    const video = videoRef.current;
+    const vWidth = video?.videoWidth || 640;
+    const vHeight = video?.videoHeight || 480;
+    const cWidth = canvas.width;
+    const cHeight = canvas.height;
+
+    // Sub-pixel object-cover projection mapping:
+    const scale = Math.max(cWidth / vWidth, cHeight / vHeight);
+    const renderWidth = vWidth * scale;
+    const renderHeight = vHeight * scale;
+    const offsetX = (cWidth - renderWidth) / 2;
+    const offsetY = (cHeight - renderHeight) / 2;
+
+    const toCanvasX = (normX: number) => offsetX + (1 - normX) * renderWidth;
+    const toCanvasY = (normY: number) => offsetY + normY * renderHeight;
+
     // 1. Draw Skeleton Lines (in bright vibrant orange #FF7A00 matching screenshot)
     ctx.save();
     ctx.strokeStyle = '#FF7A00';
@@ -375,15 +475,15 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
       const pt2 = landmarks[p2];
       if (!pt1 || !pt2) return;
       ctx.beginPath();
-      ctx.moveTo((1 - pt1.x) * canvas.width, pt1.y * canvas.height);
-      ctx.lineTo((1 - pt2.x) * canvas.width, pt2.y * canvas.height);
+      ctx.moveTo(toCanvasX(pt1.x), toCanvasY(pt1.y));
+      ctx.lineTo(toCanvasX(pt2.x), toCanvasY(pt2.y));
       ctx.stroke();
     });
 
     // 2. Draw 21 Landmark Nodes (White inner dots, bright orange border ring)
     landmarks.forEach((pt, idx) => {
-      const cx = (1 - pt.x) * canvas.width;
-      const cy = pt.y * canvas.height;
+      const cx = toCanvasX(pt.x);
+      const cy = toCanvasY(pt.y);
       const isTip = [4, 8, 12, 16, 20].includes(idx);
       const radius = isTip ? 6 : 4;
 
@@ -421,8 +521,8 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
 
       ctx.beginPath();
       activeTrail.forEach((pt, i) => {
-        const tx = (1 - pt.x) * canvas.width;
-        const ty = pt.y * canvas.height;
+        const tx = toCanvasX(pt.x);
+        const ty = toCanvasY(pt.y);
         if (i === 0) ctx.moveTo(tx, ty);
         else ctx.lineTo(tx, ty);
       });
@@ -430,8 +530,8 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
 
       // Fingertip glowing orb at lead point
       const leadPt = activeTrail[activeTrail.length - 1];
-      const leadX = (1 - leadPt.x) * canvas.width;
-      const leadY = leadPt.y * canvas.height;
+      const leadX = toCanvasX(leadPt.x);
+      const leadY = toCanvasY(leadPt.y);
       ctx.beginPath();
       ctx.arc(leadX, leadY, 7, 0, 2 * Math.PI);
       ctx.fillStyle = '#67E8F9';
@@ -465,13 +565,14 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
         setIsHoldingCorrect(dynamicProgress > 0);
       }
     } else {
-      // Standard static sign hold check (400 ms hold target)
-      const HOLD_TARGET_MS = 400;
+      // High-confidence static sign hold check (450 ms steady hold, >= 65% confidence, zero false positives)
+      const HOLD_TARGET_MS = 450;
       const topDist = result.rawDistances;
       
       const isTargetMatch = 
-        (result.letter === targetLetter && result.confidence >= 0.35) ||
-        (topDist.length > 0 && topDist[0].letter === targetLetter && topDist[0].score >= 35);
+        result.letter === targetLetter && 
+        result.confidence >= 0.65 &&
+        (topDist.length > 0 ? topDist[0].letter === targetLetter : true);
 
       if (isTargetMatch && !isCompletingRef.current) {
         setIsHoldingCorrect(true);
@@ -508,13 +609,32 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     processLandmarksRef.current = processLandmarks;
   }, [processLandmarks]);
 
-  // Start Camera with MediaPipe Hands
+  // Start Camera with MediaPipe Hands and 3-tier progressive constraints
   const startCamera = async () => {
     setCameraLoading(true);
     setCameraError(null);
 
+    // Stop any existing tracks first to release device hardware locks
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => {
+        try { t.stop(); } catch {}
+      });
+      streamRef.current = null;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError('Webcam API is not supported in this browser or context. Please use a modern browser on localhost or HTTPS.');
+      setIsCameraActive(false);
+      setCameraLoading(false);
+      return;
+    }
+
+    let stream: MediaStream | null = null;
+    let lastErr: any = null;
+
+    // Constraint Tier 1: Ideal 640x480 with facingMode user
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 640 },
           height: { ideal: 480 },
@@ -522,41 +642,85 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
         },
         audio: false
       });
-
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        try {
-          await videoRef.current.play();
-        } catch {
-          // Play request might be interrupted on rapid tab switch, continue safely
-        }
-      }
-
-      // Initialize singleton MediaPipe Hands
+    } catch (err1: any) {
+      console.warn('Tier 1 camera constraints failed, attempting fallback tier 2:', err1);
+      lastErr = err1;
+      // Constraint Tier 2: Without facingMode (essential for external USB/virtual webcams)
       try {
-        await getHandsInstance();
-      } catch (e) {
-        console.warn('MediaPipe Hands initialization deferred:', e);
-      }
-
-      // Frame pump using singleton tracker
-      const pump = async () => {
-        if (videoRef.current && videoRef.current.readyState >= 2) {
-          await processVideoFrame(videoRef.current);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          },
+          audio: false
+        });
+      } catch (err2: any) {
+        console.warn('Tier 2 camera constraints failed, attempting fallback tier 3 (basic video):', err2);
+        lastErr = err2;
+        // Constraint Tier 3: Pure basic video
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false
+          });
+        } catch (err3: any) {
+          console.error('All camera constraint tiers failed:', err3);
+          lastErr = err3;
         }
-        pumpFrameRef.current = requestAnimationFrame(pump);
-      };
-      pump();
+      }
+    }
 
-      setIsCameraActive(true);
-      setCameraLoading(false);
-    } catch {
-      setCameraError('Webcam access was not granted or is unsupported. Please ensure camera permissions are allowed in your browser.');
+    if (!stream) {
+      const errName = lastErr?.name || '';
+      let message = 'Webcam access was not granted or is unsupported. Please ensure camera permissions are allowed in your browser.';
+      if (errName === 'NotAllowedError' || errName === 'PermissionDeniedError') {
+        message = 'Camera permission was denied. Please allow camera access in your browser address bar and click Retry Camera.';
+      } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
+        message = 'No webcam was detected on this device. Please connect a webcam and click Retry Camera.';
+      } else if (errName === 'NotReadableError' || errName === 'TrackStartError') {
+        message = 'Webcam is currently in use by another tab or program. Please close other camera apps and click Retry Camera.';
+      }
+      setCameraError(message);
       setIsCameraActive(false);
       setCameraLoading(false);
-      setUseSimulator(false);
+      return;
     }
+
+    streamRef.current = stream;
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.muted = true;
+      videoRef.current.playsInline = true;
+      try {
+        await videoRef.current.play();
+      } catch (playErr) {
+        console.warn('Video play interrupted or waiting for user interaction:', playErr);
+      }
+    }
+
+    // Initialize singleton MediaPipe Hands
+    try {
+      await getHandsInstance();
+    } catch (e) {
+      console.warn('MediaPipe Hands initialization note:', e);
+    }
+
+    // Cancel any previous pump loop before starting a new one
+    if (pumpFrameRef.current) {
+      cancelAnimationFrame(pumpFrameRef.current);
+      pumpFrameRef.current = null;
+    }
+
+    const pump = async () => {
+      if (videoRef.current && videoRef.current.readyState >= 2) {
+        await processVideoFrame(videoRef.current);
+      }
+      pumpFrameRef.current = requestAnimationFrame(pump);
+    };
+    pump();
+
+    setIsCameraActive(true);
+    setCameraLoading(false);
   };
 
   const stopCamera = () => {
@@ -565,7 +729,9 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
       pumpFrameRef.current = null;
     }
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current.getTracks().forEach(t => {
+        try { t.stop(); } catch {}
+      });
       streamRef.current = null;
     }
     if (videoRef.current) {
@@ -625,57 +791,88 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
   }, [showDevTools, useSimulator, simThumb, simIndex, simMiddle, simRing, simPinky, generateSimulatedLandmarks]);
 
   return (
-    <div className="flex flex-col lg:flex-row gap-5 pb-12">
+    <div className="flex flex-col lg:flex-row gap-5 pb-12 w-full max-w-full">
       {/* ============================================================ */}
-      {/* LEFT COLUMN: Unit 1 Banner & Chapters (Letters A through Z)   */}
+      {/* LEFT COLUMN: 3-Unit, Module, & Lesson Hierarchy Sidebar      */}
       {/* ============================================================ */}
-      <aside className="w-full lg:w-[390px] xl:w-[420px] flex-shrink-0 flex flex-col space-y-4">
+      <aside className="w-full lg:w-80 xl:w-88 flex-shrink-0 flex flex-col space-y-3">
         
-        {/* Unit 1: Introduction & Fingerspelling Banner Card */}
-        <div className="bg-gradient-to-r from-[#EA580C] via-[#F97316] to-[#FB923C] rounded-2xl p-4 shadow-lg shadow-orange-600/15 text-white flex items-center justify-between gap-3">
+        {/* Learn Portal Banner */}
+        <div className="bg-gradient-to-r from-[#0B2A1E] to-[#123828] border border-[#164432] rounded-2xl p-4 shadow-lg text-white flex items-center justify-between gap-3">
           <div className="space-y-0.5 flex-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                Interactive Practice
+              </span>
+            </div>
             <h2 className="font-bold text-sm sm:text-base leading-snug break-words">
-              Unit 1: Introduction &amp; Fingerspelling
+              Signify Curriculum
             </h2>
-            <p className="text-xs text-orange-100/90 leading-tight">
-              Foundations of ASL Alphabet (A through Z)
+            <p className="text-[11px] text-emerald-200/80 leading-tight">
+              Units &bull; Modules &bull; Lessons
             </p>
           </div>
 
           <button
             onClick={() => setShowUnitGuide(true)}
-            className="px-3.5 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 active:bg-white/40 border border-white/40 text-white font-semibold text-xs flex items-center gap-1.5 backdrop-blur transition-all cursor-pointer whitespace-nowrap shrink-0 shadow-sm"
+            className="px-3 py-1.5 rounded-xl bg-[#071F15] hover:bg-[#0A261B] border border-emerald-500/30 text-emerald-200 font-semibold text-xs flex items-center gap-1 transition-all cursor-pointer whitespace-nowrap shrink-0 shadow-sm"
           >
-            <BookOpen className="w-3.5 h-3.5" />
+            <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
             <span>Guide</span>
           </button>
         </div>
 
-        {/* Chapters Navigation */}
-        <div className="space-y-3 max-h-[720px] overflow-y-auto pr-1 scrollbar-thin">
-          {CHAPTERS.map(chapter => {
-            const chapterSigns = ASL_ALPHABET.filter(s => chapter.letters.includes(s.letter));
-            const completedInChapter = chapter.letters.filter(l => completedLetters.includes(l)).length;
-            const progressPercent = Math.round((completedInChapter / chapter.letters.length) * 100);
+        {/* Unit Filter Tabs */}
+        <div className="grid grid-cols-4 gap-1.5 bg-[#05160E] border border-[#164432] p-1.5 rounded-xl">
+          {[
+            { id: 'all', label: 'All' },
+            { id: 'unit-1', label: 'U1' },
+            { id: 'unit-2', label: 'U2' },
+            { id: 'unit-3', label: 'U3' },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setSelectedUnitTab(tab.id)}
+              className={`py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer text-center ${
+                selectedUnitTab === tab.id
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-emerald-300/70 hover:text-white hover:bg-[#0B2A1E]'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Units, Modules, & Lessons Hierarchy Tree */}
+        <div className="space-y-3.5 max-h-[720px] overflow-y-auto pr-1 scrollbar-thin">
+          {CURRICULUM_UNITS.filter(unit => selectedUnitTab === 'all' || selectedUnitTab === unit.id).map(unit => {
+            const unitSigns = unit.modules.flatMap(m => m.signs);
+            const completedInUnit = unitSigns.filter(s => completedLetters.includes(s.letter) || completedLetters.includes(s.id)).length;
+            const progressPercent = unitSigns.length > 0 ? Math.round((completedInUnit / unitSigns.length) * 100) : 0;
 
             return (
               <div
-                key={chapter.id}
+                key={unit.id}
                 className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-3.5 shadow-md space-y-3"
               >
-                {/* Chapter Header */}
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-xs font-bold text-emerald-100">
-                      {chapter.title}
+                {/* Unit Header */}
+                <div className="flex items-center justify-between border-b border-[#164432] pb-2.5">
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-mono font-bold text-amber-400 uppercase tracking-wider block">
+                      {unit.badge}
+                    </span>
+                    <h3 className="text-xs font-bold text-white truncate">
+                      {unit.title}
                     </h3>
-                    <div className="text-[11px] text-emerald-400 font-medium">
-                      {completedInChapter} of {chapter.letters.length} completed
+                    <div className="text-[10px] text-emerald-400/90 font-medium mt-0.5">
+                      {completedInUnit} of {unitSigns.length} mastered ({progressPercent}%)
                     </div>
                   </div>
 
-                  {/* Mini Progress Bar */}
-                  <div className="w-20 h-1.5 bg-[#071F15] rounded-full overflow-hidden border border-[#164432]">
+                  {/* Progress Ring / Bar */}
+                  <div className="w-16 h-1.5 bg-[#071F15] rounded-full overflow-hidden border border-[#164432] shrink-0">
                     <div
                       className="h-full bg-emerald-500 rounded-full transition-all duration-300"
                       style={{ width: `${progressPercent}%` }}
@@ -683,127 +880,132 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
                   </div>
                 </div>
 
-                {/* 2-Column Grid of Sign Cards */}
-                <div className="grid grid-cols-2 gap-2.5">
-                  {chapterSigns.map(sign => {
-                    const isTarget = sign.letter === currentTargetLetter;
-                    const isDone = completedLetters.includes(sign.letter);
-                    const unlocked = isLetterUnlocked(sign.letter);
+                {/* Modules & Lessons under this Unit */}
+                <div className="space-y-3">
+                  {unit.modules.map((mod, modIdx) => (
+                    <div key={mod.id} className="space-y-2">
+                      <div className="flex items-center justify-between text-[11px] font-semibold text-emerald-300/80 px-1">
+                        <span className="truncate">
+                          Mod {unit.unitNumber}.{modIdx + 1}: {mod.title.split(':')[1]?.trim() || mod.title}
+                        </span>
+                        <span className="text-[10px] text-amber-400/90 font-mono shrink-0 ml-1">
+                          +{mod.xpPerSign} XP
+                        </span>
+                      </div>
 
-                    // Card status: COMPLETE, ACTIVE, or LOCKED
-                    let cardBorder = 'border-[#164432]';
-                    let cardBg = 'bg-[#071F15]';
-                    let badgeBg = 'bg-[#0B2A1E] text-emerald-400';
-                    let badgeContent = <Lock className="w-3.5 h-3.5" />;
-                    let statusLabel = '+15 XP LOCKED';
-                    let statusColor = 'text-emerald-500/70';
+                      {/* Lesson Cards */}
+                      <div className="grid grid-cols-1 gap-1.5">
+                        {mod.signs.map((sign, signIdx) => {
+                          const lessonCode = `${unit.unitNumber}.${modIdx + 1}.${signIdx + 1}`;
+                          const isTarget = sign.letter === currentTargetLetter || sign.id === currentTargetLetter;
+                          const isDone = completedLetters.includes(sign.letter) || completedLetters.includes(sign.id);
 
-                    if (isDone) {
-                      cardBorder = 'border-emerald-500/60';
-                      cardBg = 'bg-[#071F15] hover:bg-[#0A261B]';
-                      badgeBg = 'bg-emerald-600 text-white';
-                      badgeContent = <Check className="w-3.5 h-3.5 stroke-[3]" />;
-                      statusLabel = '+15 XP COMPLETE';
-                      statusColor = 'text-emerald-400';
-                    } else if (isTarget) {
-                      cardBorder = 'border-2 border-[#F97316] shadow-lg shadow-orange-500/10';
-                      cardBg = 'bg-[#071F15]';
-                      badgeBg = 'bg-[#F97316] text-white';
-                      badgeContent = <span className="font-black text-xs">{sign.letter}</span>;
-                      statusLabel = '+15 XP ACTIVE ►';
-                      statusColor = 'text-[#F97316]';
-                    } else if (unlocked) {
-                      cardBorder = 'border-[#164432] hover:border-[#1F533E]';
-                      cardBg = 'bg-[#071F15] hover:bg-[#0A261B]';
-                      badgeBg = 'bg-[#0E3627] text-emerald-300 border border-[#164432]';
-                      badgeContent = <span className="font-bold text-xs">{sign.letter}</span>;
-                      statusLabel = '+15 XP READY';
-                      statusColor = 'text-emerald-300';
-                    }
+                          return (
+                            <button
+                              key={sign.id}
+                              onClick={() => {
+                                selectSign(sign.letter);
+                                snapToSign(sign.letter);
+                              }}
+                              className={`px-3 py-2 rounded-xl border text-left transition-all cursor-pointer flex items-center justify-between gap-2 text-xs ${
+                                isTarget
+                                  ? 'bg-[#0E3627] border-[#F97316] text-white shadow-md'
+                                  : isDone
+                                  ? 'bg-[#071F15] border-emerald-500/50 text-emerald-100 hover:bg-[#0A261B]'
+                                  : 'bg-[#071F15] border-[#164432] text-emerald-300/80 hover:bg-[#0A261B] hover:text-white'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className={`w-5 h-5 rounded-md flex items-center justify-center text-[10px] font-bold font-mono shrink-0 ${
+                                  isTarget
+                                    ? 'bg-[#F97316] text-white'
+                                    : isDone
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'bg-[#0B2A1E] text-emerald-300 border border-[#164432]'
+                                }`}>
+                                  {isDone ? '✓' : lessonCode.split('.').pop()}
+                                </span>
+                                <span className="font-bold text-white truncate">
+                                  Lesson {lessonCode}: Sign &apos;{sign.letter}&apos;
+                                </span>
+                              </div>
 
-                    return (
-                      <button
-                        key={sign.id}
-                        onClick={() => {
-                          setJustCompletedSign(null);
-                          isCompletingRef.current = false;
-                          holdStartRef.current = 0;
-                          setCurrentTargetLetter(sign.letter);
-                          setHoldProgress(0);
-                          setHoldRemainingMs(400);
-                          setIsHoldingCorrect(false);
-                          snapToSign(sign.letter);
-                        }}
-                        className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between min-h-[92px] ${cardBg} ${cardBorder}`}
-                      >
-                        <div className="flex items-start gap-2">
-                          <div className={`w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 ${badgeBg}`}>
-                            {badgeContent}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="text-xs font-bold text-white truncate">
-                              Sign &apos;{sign.letter}&apos;
-                            </div>
-                            <div className="text-[10px] text-emerald-200/70 line-clamp-2 leading-tight mt-0.5">
-                              {sign.shortDescription || sign.description}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className={`text-[9px] font-bold tracking-tight uppercase mt-1 truncate ${statusColor}`}>
-                          {statusLabel}
-                        </div>
-                      </button>
-                    );
-                  })}
+                              <span className={`text-[10px] font-bold shrink-0 uppercase tracking-tight ${
+                                isTarget
+                                  ? 'text-[#F97316]'
+                                  : isDone
+                                  ? 'text-emerald-400'
+                                  : 'text-emerald-400/60'
+                              }`}>
+                                {isTarget ? '► Active' : isDone ? 'Done' : 'Practice'}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             );
           })}
         </div>
-
-        {/* Sidebar Controls Footer */}
-        <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-3 flex items-center justify-between text-xs text-emerald-300">
-          <div className="flex items-center gap-2">
-            <Radio className="w-3.5 h-3.5 text-[#F97316]" />
-            <span className="font-semibold text-white">Full A–Z Mode</span>
-          </div>
-
-          <button
-            onClick={() => setUnlockAll(!unlockAll)}
-            className="text-[11px] px-2.5 py-1 rounded-lg bg-[#071F15] hover:bg-[#123828] border border-[#164432] text-emerald-200 font-medium cursor-pointer transition-colors"
-          >
-            {unlockAll ? 'Guided Unlock Mode' : 'Unlock All Signs'}
-          </button>
-        </div>
-
       </aside>
 
       {/* ============================================================ */}
       {/* RIGHT COLUMN: Lesson Header, Video Canvas, Reference Guide   */}
       {/* ============================================================ */}
-      <main className="flex-1 flex flex-col space-y-4">
+      <main className="flex-1 min-w-0 flex flex-col space-y-4">
 
-        {/* 1. Lesson Header Card */}
-        <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-4 flex items-center gap-4 shadow-lg">
-          <div className="w-12 h-12 rounded-xl bg-[#F97316] text-white font-black text-2xl flex items-center justify-center shadow-md flex-shrink-0">
-            {targetSign.letter}
+        {/* 1. Lesson Header Card & Reaction Speed Stopwatch */}
+        <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
+          <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-4 flex items-center justify-between gap-4 shadow-lg flex-1 min-w-0">
+            <div className="flex items-center gap-3.5 min-w-0">
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#FF4D26] to-[#F97316] text-white font-black text-2xl flex items-center justify-center shadow-md flex-shrink-0">
+                {targetSign.letter}
+              </div>
+
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h1 className="text-base sm:text-lg font-bold text-white leading-tight truncate">
+                    Lesson {currentLessonInfo?.lessonCode || '1.1.1'}: Sign &apos;{targetSign.letter}&apos;
+                  </h1>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
+                    Unit {currentLessonInfo?.unitNumber || 1} &bull; {targetSign.signType || 'Alphabet'}
+                  </span>
+                </div>
+                <p className="text-xs text-emerald-300/90 truncate mt-0.5">
+                  Hold posture firmly in camera view to register visual completion.
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowVideoModal(true)}
+              className="px-3.5 py-2 rounded-xl bg-[#071F15] hover:bg-[#123828] border border-amber-500/40 text-amber-300 hover:text-amber-200 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+              title="Watch video sample & 3D hand animation"
+            >
+              <Video className="w-4 h-4 text-[#FF4D26]" />
+              <span className="hidden sm:inline">Watch Video / GIF Demo</span>
+              <span className="sm:hidden">Video Demo</span>
+            </button>
           </div>
 
-          <div className="min-w-0">
-            <h1 className="text-base sm:text-lg font-bold text-white leading-tight">
-              Lesson: Sign the Character &apos;{targetSign.letter}&apos;
-            </h1>
-            <p className="text-xs text-emerald-300/90 truncate mt-0.5">
-              Position hand in view, match handshape, and hold steadily for 400 ms.
-            </p>
+          {/* Real-Time Reaction Speed Stopwatch */}
+          <div className="xl:w-72 shrink-0">
+            <SpeedTrackerWidget
+              targetLabel={targetSign.letter}
+              isMatched={isHoldingCorrect}
+              onTimeTrialComplete={(ms) => setLastSpeedMs(ms)}
+              personalBestMs={authSyncService.getCurrentUser()?.bestSpeedRecords?.[targetSign.letter]}
+            />
           </div>
         </div>
 
         {/* 2. Central Video Canvas Viewport */}
         <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-4 shadow-xl flex flex-col space-y-3">
           
-          <div className="relative rounded-2xl overflow-hidden bg-[#04120B] border border-[#164432] aspect-video flex items-center justify-center shadow-inner">
+          <div className="relative rounded-2xl overflow-hidden bg-[#04120B] border border-[#164432] aspect-[16/9] w-full max-h-[480px] flex items-center justify-center shadow-inner">
             {/* Live Video Feed */}
             <video
               ref={videoRef}
@@ -820,32 +1022,6 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
               className="absolute inset-0 w-full h-full pointer-events-none"
             />
 
-            {/* Ghost Guide Overlay */}
-            {showGhostGuide && targetSign.referenceLandmarks && (
-              <svg 
-                viewBox="0 0 1 1" 
-                className="absolute inset-0 w-full h-full pointer-events-none opacity-40"
-              >
-                {SKELETON_CONNECTIONS.map(([a, b], idx) => {
-                  const p1 = targetSign.referenceLandmarks[a];
-                  const p2 = targetSign.referenceLandmarks[b];
-                  if (!p1 || !p2) return null;
-                  return (
-                    <line
-                      key={idx}
-                      x1={1 - p1.x}
-                      y1={p1.y}
-                      x2={1 - p2.x}
-                      y2={p2.y}
-                      stroke="#10B981"
-                      strokeWidth="0.015"
-                      strokeDasharray="0.02, 0.02"
-                    />
-                  );
-                })}
-              </svg>
-            )}
-
             {/* Top Left Tag: Live AI Recognition Status */}
             <div className="absolute top-3 left-3 bg-[#0B2A1E]/90 backdrop-blur-md border border-[#164432] px-3 py-1.5 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-md">
               <span className={`w-2 h-2 rounded-full ${isCameraActive ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
@@ -861,26 +1037,16 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
 
             {/* Top Right Quick Controls */}
             <div className="absolute top-3 right-3 flex items-center gap-1.5">
-              <button
-                onClick={() => setShowDatasetModal(true)}
-                className="px-2.5 py-1.5 rounded-xl bg-[#0B2A1E]/80 hover:bg-[#164432] border border-[#164432] text-emerald-300 hover:text-white backdrop-blur-md transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold shadow-xs"
-                title="Collect Training Data & Export .CSV"
-              >
-                <Database className="w-3.5 h-3.5 text-[#F97316]" />
-                <span className="hidden sm:inline">Dataset .CSV</span>
-              </button>
-
-              <button
-                onClick={() => setShowGhostGuide(!showGhostGuide)}
-                className={`p-2 rounded-xl border backdrop-blur-md transition-colors cursor-pointer ${
-                  showGhostGuide 
-                    ? 'bg-emerald-600/90 border-emerald-400 text-white' 
-                    : 'bg-[#0B2A1E]/80 border-[#164432] text-emerald-300 hover:text-white'
-                }`}
-                title="Toggle Ghost Alignment Guide"
-              >
-                {showGhostGuide ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
-              </button>
+              {authSyncService.getCurrentUser()?.role === 'admin' && (
+                <button
+                  onClick={() => setShowDatasetModal(true)}
+                  className="px-2.5 py-1.5 rounded-xl bg-[#0B2A1E]/80 hover:bg-[#164432] border border-[#164432] text-emerald-300 hover:text-white backdrop-blur-md transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold shadow-xs"
+                  title="Admin Training Data & Export .CSV"
+                >
+                  <Database className="w-3.5 h-3.5 text-[#F97316]" />
+                  <span className="hidden sm:inline">Dataset .CSV</span>
+                </button>
+              )}
 
               <button
                 onClick={() => setSoundEnabled(!soundEnabled)}
@@ -951,12 +1117,18 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
                   <Check className="w-6 h-6 stroke-[3]" />
                 </div>
                 <div>
-                  <div className="font-bold text-sm text-emerald-100 flex items-center gap-1.5">
-                    <span>Sign &apos;{justCompletedSign}&apos; Accomplished! (+15 XP)</span>
+                  <div className="font-bold text-sm text-emerald-100 flex items-center gap-2 flex-wrap">
+                    <span>Sign &apos;{justCompletedSign}&apos; Accomplished!</span>
+                    {lastSpeedMs && (
+                      <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-xs font-mono font-bold flex items-center gap-1">
+                        <Timer className="w-3 h-3 text-amber-400" />
+                        <span>{(lastSpeedMs / 1000).toFixed(2)}s</span>
+                      </span>
+                    )}
                     <Sparkles className="w-4 h-4 text-amber-300" />
                   </div>
-                  <p className="text-xs text-emerald-300/90">
-                    Visual posture verified. You can continue practicing or advance to the next sign when ready.
+                  <p className="text-xs text-emerald-300/90 mt-0.5">
+                    {duplicateXpNotice || 'Visual posture verified. You can continue practicing or advance to the next sign when ready.'}
                   </p>
                 </div>
               </div>
@@ -976,7 +1148,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
                   Practice &apos;{justCompletedSign}&apos; Again
                 </button>
 
-                {targetSignIndex < ASL_ALPHABET.length - 1 && (
+                {targetSignIndex < allCurriculumSigns.length - 1 && (
                   <button
                     onClick={() => {
                       setJustCompletedSign(null);
@@ -984,7 +1156,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
                     }}
                     className="px-5 py-2 rounded-xl bg-[#F97316] hover:bg-[#EA580C] text-white text-xs font-bold shadow-lg shadow-orange-600/30 flex items-center gap-1.5 cursor-pointer transition-all transform hover:scale-[1.02]"
                   >
-                    <span>Next Sign ({ASL_ALPHABET[targetSignIndex + 1]?.letter})</span>
+                    <span>Next Sign ({allCurriculumSigns[targetSignIndex + 1]?.letter})</span>
                     <ChevronRight className="w-4 h-4" />
                   </button>
                 )}
@@ -1027,7 +1199,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
 
               <button
                 onClick={handleNextSign}
-                disabled={targetSignIndex >= ASL_ALPHABET.length - 1}
+                disabled={targetSignIndex >= allCurriculumSigns.length - 1}
                 className="px-5 py-2.5 rounded-xl bg-[#F97316] hover:bg-[#EA580C] disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors cursor-pointer"
               >
                 <span>Next Sign</span>
@@ -1175,6 +1347,15 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
         isCameraActive={isCameraActive}
         onStartCamera={startCamera}
       />
+
+      {/* Video Demonstration Modal (Comment 5) */}
+      {showVideoModal && (
+        <SignVideoModal
+          sign={targetSign}
+          isOpen={showVideoModal}
+          onClose={() => setShowVideoModal(false)}
+        />
+      )}
     </div>
   );
 };

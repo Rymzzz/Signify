@@ -1,6 +1,8 @@
 import { HandLandmark, ASLSign } from '../types/index';
 import { ASL_ALPHABET } from '../data/aslAlphabet';
+import { getAllSigns } from '../data/aslCurriculum';
 import { DynamicMotionState } from './motionTracker';
+import { estimateASLGesturesBilateral } from './aslGestures';
 
 export interface FingerStateAnalysis {
   thumbExtended: boolean;
@@ -75,6 +77,29 @@ export function extractNormalized42(landmarks: HandLandmark[]): number[] {
 
   for (let i = 0; i < 21; i++) {
     const rx = landmarks[i].x - baseX;
+    const ry = landmarks[i].y - baseY;
+    raw.push(rx, ry);
+    if (Math.abs(rx) > maxVal) maxVal = Math.abs(rx);
+    if (Math.abs(ry) > maxVal) maxVal = Math.abs(ry);
+  }
+
+  if (maxVal < 0.0001) maxVal = 1;
+
+  return raw.map(v => v / maxVal);
+}
+
+// Horizontally mirrored 42-float vector for bilateral left/right hand invariance
+export function extractNormalized42Flipped(landmarks: HandLandmark[]): number[] {
+  if (!landmarks || landmarks.length < 21) return new Array(42).fill(0);
+
+  const baseX = landmarks[0].x;
+  const baseY = landmarks[0].y;
+
+  const raw: number[] = [];
+  let maxVal = 0;
+
+  for (let i = 0; i < 21; i++) {
+    const rx = -(landmarks[i].x - baseX);
     const ry = landmarks[i].y - baseY;
     raw.push(rx, ry);
     if (Math.abs(rx) > maxVal) maxVal = Math.abs(rx);
@@ -398,8 +423,9 @@ export function analyzeFingers(landmarks: HandLandmark[]): FingerStateAnalysis {
   };
 }
 
-// Pre-compute normalized 42-D feature vectors for reference alphabet
-const REFERENCE_FEATURES: { letter: string; features: number[]; sign: ASLSign }[] = ASL_ALPHABET.map(sign => ({
+// Pre-compute normalized 42-D feature vectors for all curriculum signs (Alphabet, Numbers, Words)
+const ALL_CURRICULUM_SIGNS = getAllSigns();
+const REFERENCE_FEATURES: { letter: string; features: number[]; sign: ASLSign }[] = ALL_CURRICULUM_SIGNS.map(sign => ({
   letter: sign.letter,
   features: extractNormalized42(sign.referenceLandmarks),
   sign,
@@ -424,13 +450,17 @@ export function classifyHandPose(
     };
   }
 
-  const userNorm42 = extractNormalized42(landmarks);
+  const userNorm42Normal = extractNormalized42(landmarks);
+  const userNorm42Flipped = extractNormalized42Flipped(landmarks);
   const analysis = analyzeFingers(landmarks);
   const palmScale = Math.hypot(landmarks[0].x - landmarks[9].x, landmarks[0].y - landmarks[9].y);
   const thumbTip = landmarks[4];
   const indexMcp = landmarks[5];
 
-  // Compute Euclidean similarity against all 26 ASL reference signs
+  // Bilateral kinematics evaluation across all 47 fingerpose gestures
+  const fpEstimates = estimateASLGesturesBilateral(landmarks, 5.0);
+
+  // Compute Euclidean similarity against all 26 ASL reference signs with bilateral invariance
   const scores: {
     letter: string;
     compositeScore: number;
@@ -440,15 +470,27 @@ export function classifyHandPose(
   }[] = [];
 
   REFERENCE_FEATURES.forEach(({ letter, features, sign }) => {
-    let sumSq = 0;
+    let sumSqNormal = 0;
+    let sumSqFlipped = 0;
     for (let i = 0; i < 42; i++) {
-      const diff = userNorm42[i] - features[i];
-      sumSq += diff * diff;
+      const diffN = userNorm42Normal[i] - features[i];
+      sumSqNormal += diffN * diffN;
+      const diffF = userNorm42Flipped[i] - features[i];
+      sumSqFlipped += diffF * diffF;
     }
-    const euclideanDist = Math.sqrt(sumSq);
+    // Take minimum Euclidean distance across normal and flipped hand (bilateral left/right invariance)
+    const euclideanDist = Math.min(Math.sqrt(sumSqNormal), Math.sqrt(sumSqFlipped));
 
     // Anatomical bonus/penalty heuristics for each letter of the alphabet (A-Z):
     let ruleBonus = 0;
+
+    // Incorporate fingerpose bilateral kinematic score
+    const fpScore = fpEstimates.scores[letter] || 0;
+    if (fpScore >= 7.5) {
+      ruleBonus += 0.45;
+    } else if (fpScore >= 6.0) {
+      ruleBonus += 0.20;
+    }
 
     switch (letter) {
       case 'A':
@@ -853,16 +895,215 @@ export function classifyHandPose(
           ruleBonus -= 0.6;
         }
         break;
+
+      // NUMBERS MODULE (0 - 10)
+      case '0':
+        if (analysis.isClosedCircleO || (analysis.indexThumbPinch && !analysis.indexExtended)) {
+          ruleBonus += 0.90;
+        } else {
+          ruleBonus -= 0.40;
+        }
+        break;
+
+      case '1':
+        if (analysis.indexExtended && !analysis.middleExtended && !analysis.ringExtended && !analysis.pinkyExtended && !analysis.thumbOutward) {
+          ruleBonus += 0.90;
+          if (analysis.indexPointingUpright) ruleBonus += 0.20;
+        } else {
+          ruleBonus -= 0.50;
+        }
+        break;
+
+      case '2':
+        if (analysis.indexExtended && analysis.middleExtended && !analysis.ringExtended && !analysis.pinkyExtended && !analysis.thumbOutward) {
+          ruleBonus += 0.90;
+          if (analysis.indexMiddleSpread > 0.15) ruleBonus += 0.20;
+        } else {
+          ruleBonus -= 0.50;
+        }
+        break;
+
+      case '3':
+        // ASL 3: Thumb + Index + Middle extended! Ring + Pinky curled
+        if (analysis.indexExtended && analysis.middleExtended && (analysis.thumbExtended || analysis.thumbOutward) && !analysis.ringExtended && !analysis.pinkyExtended) {
+          ruleBonus += 1.10;
+        } else if (targetLetter === '3' && analysis.indexExtended && analysis.middleExtended) {
+          ruleBonus += 0.60;
+        } else {
+          ruleBonus -= 0.50;
+        }
+        break;
+
+      case '4':
+        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended && !analysis.thumbOutward) {
+          ruleBonus += 0.95;
+        } else {
+          ruleBonus -= 0.50;
+        }
+        break;
+
+      case '5':
+        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended && (analysis.thumbExtended || analysis.thumbOutward)) {
+          ruleBonus += 1.05;
+        } else {
+          ruleBonus -= 0.50;
+        }
+        break;
+
+      case '6':
+        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && !analysis.pinkyExtended) {
+          ruleBonus += 0.95;
+        } else {
+          ruleBonus -= 0.40;
+        }
+        break;
+
+      case '7':
+        if (analysis.indexExtended && analysis.middleExtended && !analysis.ringExtended && analysis.pinkyExtended) {
+          ruleBonus += 0.95;
+        } else {
+          ruleBonus -= 0.40;
+        }
+        break;
+
+      case '8':
+        if (analysis.indexExtended && !analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+          ruleBonus += 0.95;
+        } else {
+          ruleBonus -= 0.40;
+        }
+        break;
+
+      case '9':
+        if (!analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+          ruleBonus += 0.95;
+        } else {
+          ruleBonus -= 0.40;
+        }
+        break;
+
+      case '10':
+        if (analysis.allFingersCurled && (analysis.thumbUpright || analysis.thumbExtended)) {
+          ruleBonus += 0.95;
+        } else {
+          ruleBonus -= 0.40;
+        }
+        break;
+
+      // WORDS & GREETINGS MODULE (WLASL / MuteMotion)
+      case 'HELLO':
+        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+          ruleBonus += 0.90;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'THANK YOU':
+        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+          ruleBonus += 0.90;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'YES':
+        if (analysis.allFingersCurled) {
+          ruleBonus += 0.90;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'NO':
+        if (analysis.indexThumbPinch || analysis.middleThumbPinch || (!analysis.ringExtended && !analysis.pinkyExtended)) {
+          ruleBonus += 1.15;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'NICE TO MEET YOU':
+        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+          ruleBonus += 1.05;
+        } else if (analysis.indexExtended && !analysis.middleExtended) {
+          ruleBonus += 0.90;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'HOW ARE YOU':
+        if (analysis.isCurvedC || (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended)) {
+          ruleBonus += 1.05;
+        } else if (analysis.indexExtended && !analysis.middleExtended) {
+          ruleBonus += 0.90;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'PLEASE':
+        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && analysis.pinkyExtended) {
+          ruleBonus += 0.85;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'SORRY':
+        if (analysis.allFingersCurled && (analysis.thumbAlongsideIndex || analysis.thumbUpright)) {
+          ruleBonus += 0.90;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'HELP':
+        if (analysis.allFingersCurled && (analysis.thumbUpright || analysis.thumbExtended)) {
+          ruleBonus += 0.90;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'MORE':
+        if (analysis.allFingersCurled || analysis.isClosedCircleO || analysis.indexThumbPinch) {
+          ruleBonus += 0.85;
+        } else {
+          ruleBonus -= 0.30;
+        }
+        break;
+
+      case 'I LOVE YOU':
+        if (analysis.thumbExtended && analysis.indexExtended && !analysis.middleExtended && !analysis.ringExtended && analysis.pinkyExtended) {
+          ruleBonus += 1.25;
+        } else if (targetLetter === 'I LOVE YOU' && analysis.indexExtended && analysis.pinkyExtended) {
+          ruleBonus += 0.80;
+        } else {
+          ruleBonus -= 0.50;
+        }
+        break;
+
+      case 'WATER':
+        if (analysis.indexExtended && analysis.middleExtended && analysis.ringExtended && !analysis.pinkyExtended) {
+          ruleBonus += 0.95;
+        } else {
+          ruleBonus -= 0.40;
+        }
+        break;
+
       default:
         break;
     }
 
-    // Contextual target bonus when user matches target sign's rules
+    // Contextual target bonus ONLY when user strictly passes target sign's anatomical rules
     if (targetLetter && letter === targetLetter) {
-      if (ruleBonus > 0.25) {
-        ruleBonus += 0.45;
-      } else if (ruleBonus >= 0) {
-        ruleBonus += 0.30;
+      if (ruleBonus > 0.40) {
+        ruleBonus += 0.40;
+      } else if (ruleBonus <= 0) {
+        // Anatomical criteria violated — heavily penalize target so wrong signs never trigger false positive
+        ruleBonus -= 0.60;
       }
     }
 
@@ -885,8 +1126,9 @@ export function classifyHandPose(
   const top = scores[0];
   const matchedSign = top.sign;
 
-  // Normalized display confidence between 0.05 and 0.99
-  const confidence = Math.max(0.05, Math.min(0.99, (top.baseSimilarity * 0.65) + Math.max(0, Math.min(0.35, top.ruleBonus * 0.35))));
+  // Normalized display confidence: only reaches >= 0.65 when anatomical pose criteria are strictly satisfied
+  const anatomicalFactor = top.ruleBonus > 0 ? Math.min(0.45, top.ruleBonus * 0.35) : -0.20;
+  const confidence = Math.max(0.05, Math.min(0.99, (top.baseSimilarity * 0.55) + anatomicalFactor));
 
   const isDynamicMotion = (top.letter === 'J' && !!motionState?.j.detected) ||
                           (top.letter === 'Z' && !!motionState?.z.detected);
@@ -897,7 +1139,7 @@ export function classifyHandPose(
   // Generate coaching cue
   let coachingCue = matchedSign.tips[0] || 'Good form!';
   if (targetLetter && targetLetter !== top.letter) {
-    const targetSign = ASL_ALPHABET.find(s => s.letter === targetLetter);
+    const targetSign = ALL_CURRICULUM_SIGNS.find(s => s.letter === targetLetter || s.id === targetLetter);
     if (targetSign) {
       if (targetLetter === 'G' && analysis.indexPointingUpright) {
         coachingCue = 'Target is "G": Turn your hand sideways and point your index finger horizontally.';

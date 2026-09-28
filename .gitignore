@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production build
+dist/
+dist-ssr/
+
+# Environment and local certificates
+.env
+.env.local
+.env.*.local
+*.pem
+certs/
+
+# Python virtual environment & cache
+.venv/
+*/.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Heavy raw datasets (2.2GB raw image archives)
+processed_combine_asl_dataset/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+*.local
+
