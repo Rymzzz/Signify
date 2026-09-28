@@ -18,7 +18,7 @@ import {
   ArrowRight
 } from 'lucide-react';
 import { getAllSigns, CURRICULUM_MODULES } from '../data/aslCurriculum';
-import { ASLSign, HandLandmark } from '../types/index';
+import { ASLSign, HandLandmark, UserProfile } from '../types/index';
 import { classifyHandPose, analyzeFingers, ClassificationResult } from '../utils/aslClassifier';
 import { globalMotionTracker } from '../utils/motionTracker';
 import { soundEngine } from '../utils/audio';
@@ -90,11 +90,21 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
   const [speedTrialKey, setSpeedTrialKey] = useState<number>(Date.now());
   const [videoModalOpen, setVideoModalOpen] = useState<boolean>(false);
 
-  const currentUser = authSyncService.getCurrentUser();
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(authSyncService.getCurrentUser());
+  const challengeStartTimeRef = useRef<number>(performance.now());
+
+  useEffect(() => {
+    const unsub = authSyncService.subscribe((u) => {
+      if (u) setCurrentUser(u);
+    });
+    return unsub;
+  }, []);
+
   const currentTargetSign: ASLSign = allSigns.find(s => s.letter === challengeTarget || s.id === challengeTarget) || allSigns[0];
 
   const pickRandomSign = useCallback(() => {
     globalMotionTracker.reset();
+    challengeStartTimeRef.current = performance.now();
     const list = getFilteredSigns();
     const randomSign = list[Math.floor(Math.random() * list.length)] || allSigns[0];
     setChallengeTarget(randomSign.letter);
@@ -319,9 +329,16 @@ export const PracticeView: React.FC<PracticeViewProps> = ({ onScoreEarned, initi
           setIsTargetMatched(true);
           soundEngine.playSuccess();
 
+          const now = performance.now();
+          const elapsed = Math.max(150, Math.min(30000, Math.round(now - (challengeStartTimeRef.current || now))));
+
           if (isChallengeMode && challengeActive) {
             setChallengeScore(s => s + 1);
-            if (onScoreEarned) onScoreEarned(15);
+            authSyncService.recordSignPractice(challengeTarget, 15, elapsed).then(res => {
+              if (res.xpEarned > 0 && onScoreEarned) {
+                onScoreEarned(res.xpEarned);
+              }
+            });
             setTimeout(() => {
               pickRandomSign();
             }, 800);

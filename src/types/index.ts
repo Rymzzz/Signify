@@ -47,7 +47,7 @@ export interface UserProfile {
   lastActiveDate: string; // 'YYYY-MM-DD'
   streak: number;
   xp: number;
-  trophies: number;
+  trophies?: number;
   level: number;
   // Completed signs across all modules
   completedSigns: string[];

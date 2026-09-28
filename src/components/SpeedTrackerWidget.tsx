@@ -169,7 +169,7 @@ export const SpeedTrackerWidget: React.FC<SpeedTrackerWidgetProps> = ({
       {/* Footer Info: Personal Best & Status */}
       <div className="flex items-center justify-between text-[11px] pt-0.5">
         <div className="flex items-center space-x-1.5 text-emerald-300/80">
-          <Trophy className="w-3.5 h-3.5 text-amber-400" />
+          <Award className="w-3.5 h-3.5 text-amber-400" />
           <span>Personal Best:</span>
           <span className="font-mono font-bold text-white">
             {personalBestMs ? formatSeconds(personalBestMs) : '--'}

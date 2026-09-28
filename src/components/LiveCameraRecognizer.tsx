@@ -335,16 +335,25 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
     setIsHoldingCorrect(true);
     setJustCompletedSign(letterToComplete);
 
-    const elapsed = Math.round(performance.now() - speedStartTimeRef.current);
+    const now = performance.now();
+    const rawElapsed = Math.round(now - (speedStartTimeRef.current || now));
+    const elapsed = Math.max(150, Math.min(30000, rawElapsed));
     setLastSpeedMs(elapsed);
 
-    // Call progress tracking with duplicate XP protection (Comment 1.1)
+    // Call progress tracking with duplicate XP protection & speed recording
     authSyncService.recordSignPractice(letterToComplete, 15, elapsed).then(res => {
-      if (res.isDuplicateToday) {
-        setDuplicateXpNotice(`Already completed today (+0 XP duplicate protection). Reaction: ${(elapsed / 1000).toFixed(2)}s`);
-      } else {
-        setDuplicateXpNotice(`+${res.xpEarned} XP earned! Day streak: ${res.streak}d. Reaction: ${(elapsed / 1000).toFixed(2)}s`);
+      let notice = '';
+      if (res.isPersonalBest) {
+        notice = `⚡ NEW PERSONAL BEST: ${(elapsed / 1000).toFixed(2)}s! `;
       }
+      if (res.isDuplicateToday) {
+        notice += `Reaction: ${(elapsed / 1000).toFixed(2)}s (Daily XP already credited for '${letterToComplete}')`;
+      } else {
+        notice += `+${res.xpEarned} XP! Day streak: ${res.streak}d (Reaction: ${(elapsed / 1000).toFixed(2)}s)`;
+      }
+      setDuplicateXpNotice(notice);
+    }).catch(err => {
+      console.warn('Record practice notice:', err);
     });
 
     if (!completedLetters.includes(letterToComplete)) {
@@ -1142,6 +1151,7 @@ export const LiveCameraRecognizer: React.FC<LiveCameraRecognizerProps> = ({
                     setHoldRemainingMs(400);
                     setIsHoldingCorrect(false);
                     isCompletingRef.current = false;
+                    speedStartTimeRef.current = performance.now();
                   }}
                   className="px-3.5 py-2 rounded-xl bg-[#061F15] hover:bg-[#0E3524] border border-emerald-600/40 text-emerald-200 text-xs font-semibold cursor-pointer transition-colors"
                 >

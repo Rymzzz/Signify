@@ -54,22 +54,12 @@ export default function App() {
     setActiveTab('dashboard');
   };
 
-  const handleScoreEarned = (amount: number) => {
-    // Score earned via practice view
-    if (user) {
-      setUser({ ...user, xp: user.xp + amount });
-    }
+  const handleScoreEarned = (_amount: number) => {
+    // Dynamic XP and records are updated centrally via authSyncService.recordSignPractice
   };
 
-  const handleLetterCompleted = (letter: string) => {
-    // Letter completed in Studio
-    if (user && !user.completedSigns.includes(letter)) {
-      setUser({
-        ...user,
-        completedSigns: [...user.completedSigns, letter],
-        trophies: user.trophies + 1
-      });
-    }
+  const handleLetterCompleted = (_letter: string) => {
+    // Dynamic completion state is updated centrally via authSyncService.recordSignPractice
   };
 
   return (
@@ -147,10 +137,10 @@ export default function App() {
         {/* Step 6: User Profile with Anti-Duplicate XP ledger and speed records */}
         {activeTab === 'profile' && (
           <ProfileView
+            user={user}
             completedLetters={user?.completedSigns || []}
             xp={user?.xp || 0}
-            streak={user?.streak || 1}
-            trophies={user?.trophies || 0}
+            streak={user?.streak || 0}
           />
         )}
 

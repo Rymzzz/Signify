@@ -131,20 +131,29 @@ export const LearningDashboard: React.FC<LearningDashboardProps> = ({
           </div>
         </div>
 
-        {/* Trophies */}
-        <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-4 sm:p-5 flex items-center space-x-3.5 shadow-md">
-          <div className="w-12 h-12 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30 shrink-0">
-            <Trophy className="w-6 h-6" />
-          </div>
-          <div>
-            <span className="text-[11px] font-bold text-emerald-300/70 uppercase tracking-wider block">
-              Trophies Earned
-            </span>
-            <span className="text-xl sm:text-2xl font-black text-white font-mono">
-              {user.trophies} <span className="text-xs text-amber-400 font-sans font-bold">Awards</span>
-            </span>
-          </div>
-        </div>
+        {/* Personal Best (Fastest Speed) */}
+        {(() => {
+          const speedEntries = (Object.entries(user.bestSpeedRecords || {}) as [string, number][]).sort((a, b) => a[1] - b[1]);
+          const fastest = speedEntries.length > 0 ? speedEntries[0] : null;
+          return (
+            <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-4 sm:p-5 flex items-center space-x-3.5 shadow-md">
+              <div className="w-12 h-12 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30 shrink-0">
+                <Award className="w-6 h-6" />
+              </div>
+              <div>
+                <span className="text-[11px] font-bold text-emerald-300/70 uppercase tracking-wider block">
+                  Personal Best
+                </span>
+                <span className="text-xl sm:text-2xl font-black text-white font-mono">
+                  {fastest ? `${(fastest[1] / 1000).toFixed(2)}s` : '--'}
+                </span>
+                <span className="text-[10px] text-amber-400 font-sans block truncate max-w-[120px]">
+                  {fastest ? `Sign '${fastest[0]}'` : 'Practice to set'}
+                </span>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Speed Record */}
         <div className="bg-[#0B2A1E] border border-[#164432] rounded-2xl p-4 sm:p-5 flex items-center space-x-3.5 shadow-md">

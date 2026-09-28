@@ -39,10 +39,9 @@ const DEFAULT_USERS: UserProfile[] = [
     role: 'admin',
     avatar: '🛡️',
     createdAt: Date.now(),
-    lastActiveDate: getTodayStr(),
+    lastActiveDate: '',
     streak: 0,
     xp: 0,
-    trophies: 0,
     level: 1,
     completedSigns: [],
     dailyPracticedSigns: {},
@@ -343,10 +342,9 @@ class AuthSyncService {
       role,
       avatar: role === 'admin' ? '🛡️' : '🌟',
       createdAt: Date.now(),
-      lastActiveDate: getTodayStr(),
+      lastActiveDate: '',
       streak: 0,
       xp: 0,
-      trophies: 0,
       level: 1,
       completedSigns: [],
       dailyPracticedSigns: {},
@@ -394,6 +392,7 @@ class AuthSyncService {
     newTotalXp: number;
     moduleCompleted?: string;
     isPersonalBest?: boolean;
+    user: UserProfile;
   }> {
     if (!this.currentUser) {
       throw new Error('Please sign in to record progress and practice.');
@@ -428,23 +427,24 @@ class AuthSyncService {
       user.lastActiveDate = today;
 
       // Add to completed signs list if not present
+      if (!user.completedSigns) user.completedSigns = [];
       if (!user.completedSigns.includes(signId)) {
         user.completedSigns.push(signId);
-        user.trophies = (user.trophies || 0) + 1;
       }
     }
 
-    // Check speed records
+    // Check speed records (even if practiced earlier today, allow setting faster Personal Best!)
     let isPersonalBest = false;
     if (elapsedMs !== undefined && elapsedMs > 0) {
+      const validElapsed = Math.max(150, Math.min(30000, Math.round(elapsedMs)));
       if (!user.bestSpeedRecords) user.bestSpeedRecords = {};
       const prevBest = user.bestSpeedRecords[signId];
-      if (!prevBest || elapsedMs < prevBest) {
-        user.bestSpeedRecords[signId] = elapsedMs;
+      if (!prevBest || validElapsed < prevBest) {
+        user.bestSpeedRecords[signId] = validElapsed;
         isPersonalBest = true;
       }
 
-      // Recompute average speed
+      // Recompute average speed across all recorded best speed signs
       const values = Object.values(user.bestSpeedRecords);
       if (values.length > 0) {
         const sum = values.reduce((acc, v) => acc + v, 0);
@@ -454,13 +454,13 @@ class AuthSyncService {
 
     // Check if any curriculum module was just completed!
     let moduleCompleted: string | undefined = undefined;
+    if (!user.completedModules) user.completedModules = [];
     CURRICULUM_MODULES.forEach(mod => {
       if (!user.completedModules.includes(mod.id)) {
         const allSignsDone = mod.signs.every(s => user.completedSigns.includes(s.letter) || user.completedSigns.includes(s.id));
         if (allSignsDone) {
           user.completedModules.push(mod.id);
           user.xp += 100; // Module completion bonus!
-          user.trophies += 2;
           moduleCompleted = mod.title;
         }
       }
@@ -477,8 +477,18 @@ class AuthSyncService {
       streak: user.streak,
       newTotalXp: user.xp,
       moduleCompleted,
-      isPersonalBest
+      isPersonalBest,
+      user
     };
+  }
+
+  public async addDirectXp(amount: number): Promise<UserProfile | null> {
+    if (!this.currentUser) return null;
+    const user = { ...this.currentUser };
+    user.xp = (user.xp || 0) + amount;
+    user.level = Math.max(1, Math.floor(user.xp / 100) + 1);
+    await this.persistUser(user);
+    return user;
   }
 
   // Admin Tools: Update any user or reset

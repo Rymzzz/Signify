@@ -17,26 +17,41 @@ import {
 import { SignifyLogo } from './SignifyLogo';
 import { authSyncService } from '../services/authSyncService';
 import { getAllSigns, CURRICULUM_MODULES } from '../data/aslCurriculum';
+import { UserProfile } from '../types/index';
 
 interface ProfileViewProps {
+  user?: UserProfile | null;
   completedLetters?: string[];
   xp?: number;
   streak?: number;
-  trophies?: number;
 }
 
 export const ProfileView: React.FC<ProfileViewProps> = ({
+  user: initialUser,
   completedLetters = [],
   xp = 0,
   streak = 0,
-  trophies = 0
 }) => {
-  const user = authSyncService.getCurrentUser();
+  const [currentUser, setCurrentUser] = React.useState<UserProfile | null>(initialUser || authSyncService.getCurrentUser());
+
+  React.useEffect(() => {
+    if (initialUser) {
+      setCurrentUser(initialUser);
+    }
+  }, [initialUser]);
+
+  React.useEffect(() => {
+    const unsub = authSyncService.subscribe((u) => {
+      if (u) setCurrentUser(u);
+    });
+    return unsub;
+  }, []);
+
+  const user = currentUser;
   const allSigns = getAllSigns();
 
   const activeXp = user ? user.xp : xp;
   const activeStreak = user ? user.streak : streak;
-  const activeTrophies = user ? user.trophies : trophies;
   const completedList = user?.completedSigns?.length ? user.completedSigns : completedLetters;
 
   const totalCurriculumCount = allSigns.length;
@@ -44,14 +59,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const percentComplete = Math.min(100, Math.round((totalCompletedCount / totalCurriculumCount) * 100));
 
   // Top speed records
-  const speedEntries = Object.entries(user?.bestSpeedRecords || {}).sort((a, b) => a[1] - b[1]);
+  const speedEntries = (Object.entries(user?.bestSpeedRecords || {}) as [string, number][]).sort((a, b) => a[1] - b[1]);
+  const fastestSpeedMs = speedEntries.length > 0 ? speedEntries[0][1] : null;
+  const fastestSignLetter = speedEntries.length > 0 ? speedEntries[0][0] : null;
 
   const achievements = [
     { title: 'First Sign', desc: 'Successfully signed your first ASL character', unlocked: totalCompletedCount >= 1, icon: Star },
     { title: '3-Day Streak', desc: 'Practiced consistently for 3 days', unlocked: activeStreak >= 3, icon: Flame },
     { title: '5-Day Streak', desc: 'Maintained practice routine for 5 days', unlocked: activeStreak >= 5, icon: Flame },
     { title: 'Speed Demon', desc: 'Executed a sign in under 2 seconds', unlocked: Boolean(speedEntries.some(e => e[1] < 2000)), icon: Timer },
-    { title: 'Alphabet Scholar', desc: 'Mastered all 26 manual alphabet signs', unlocked: totalCompletedCount >= 26, icon: Trophy },
+    { title: 'Alphabet Scholar', desc: 'Mastered all 26 manual alphabet signs', unlocked: totalCompletedCount >= 26, icon: Award },
   ];
 
   return (
@@ -84,7 +101,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         </div>
 
-        {/* Stats Pill Badges */}
+        {/* Stats Pill Badges (Day Streak, Personal Best, Total XP) */}
         <div className="grid grid-cols-3 gap-3 w-full md:w-auto">
           <div className="bg-[#071F15] border border-[#164432] rounded-2xl p-3.5 text-center flex flex-col items-center">
             <Flame className="w-5 h-5 text-[#F97316] mb-1" />
@@ -93,9 +110,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
 
           <div className="bg-[#071F15] border border-[#164432] rounded-2xl p-3.5 text-center flex flex-col items-center">
-            <Trophy className="w-5 h-5 text-amber-400 mb-1" />
-            <span className="text-xs text-emerald-300/70 font-semibold">Trophies</span>
-            <span className="text-lg font-black text-amber-400">{activeTrophies}</span>
+            <Award className="w-5 h-5 text-amber-400 mb-1" />
+            <span className="text-xs text-emerald-300/70 font-semibold">Personal Best</span>
+            <span className="text-lg font-black text-amber-400">
+              {fastestSpeedMs ? `${(fastestSpeedMs / 1000).toFixed(2)}s` : '--'}
+            </span>
           </div>
 
           <div className="bg-[#071F15] border border-[#164432] rounded-2xl p-3.5 text-center flex flex-col items-center">
