@@ -7,12 +7,16 @@ node_modules/
 dist/
 dist-ssr/
 
-# Environment and local certificates
+# Environment, local certificates, and keys
 .env
 .env.local
 .env.*.local
 *.pem
 certs/
+Downloads
+Downloads.pub
+id_*
+id_*.pub
 
 # Python virtual environment & cache
 .venv/
